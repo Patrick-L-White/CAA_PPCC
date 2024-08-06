@@ -1,0 +1,1339 @@
+---
+title: "Code for CAA_PPCC figures and analysis"
+date: "08-05-2024"
+author: "Patrick L. White"
+editor_options: 
+  chunk_output_type: console
+---
+
+## Libraries
+```{r}
+library(readr) 
+library(plyr)
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(vegan)
+library(magrittr)
+library(ecodist)
+library(data.table)
+library(factoextra)
+library(ape)
+library(randomForest)
+library(gridExtra)
+library(ggpubr)
+library(labdsv)
+library(stringi)
+library(cowplot)
+library(ggOceanMaps)
+```
+
+## Custom functions
+```{r this chunk is for instatiating custom functions that are used by the rest of the file}
+
+#' Transpose and reformat a dataframe
+#'
+#' This function transposes a given dataframe, interchanging rows and columns, and performs additional formatting to ensure consistent data types and column/row names.
+#'
+#' @param df A dataframe to be transposed and reformatted.
+#'
+#' @return A transposed and reformatted dataframe with consistent data types and names.
+#'
+#' @details This function takes a dataframe 'df' as input and returns a new dataframe where rows become columns and columns become rows, effectively transposing the data. It also ensures that column names are formatted as character strings and that data columns are converted to numeric format. Additionally, it preserves row names during the process.
+#'
+#' @export
+transpose_func = function(df) {
+  df = as.data.frame(t(df)) # Transpose the dataframe
+  names(df) = lapply(df[1, ], as.character) # Fix column names as character strings
+  df = df[-1,] # Remove the first row to fix column names
+  rownames = rownames(df) # Preserve row names
+  df <- sapply(df, as.numeric) # Convert data columns to numeric format
+  rownames(df) = rownames # Fix row names
+  return(df)
+}
+
+#' Convert specified columns in a dataframe to numeric data type
+#'
+#' This function converts the columns specified in 'cols_vec' of a given dataframe 'df' to the numeric data type, ensuring that the data in these columns can be used for numerical calculations.
+#'
+#' @param df A dataframe containing the columns to be converted.
+#' @param cols_vec A character vector specifying the names of the columns to be converted to numeric data type.
+#'
+#' @return A dataframe with the specified columns converted to numeric data type.
+#'
+#' @details This function is designed to ensure that specific columns in the input dataframe 'df' are treated as numeric values. It uses the 'sapply' function to apply the 'as.numeric' function to each column specified in 'cols_vec', effectively converting the data type to numeric. This is useful when working with data that may have been read in as character or factor types but need to be treated as numbers for mathematical operations.
+#'
+#' @export
+make_columns_numeric = function(df, cols_vec) {
+  df[, cols_vec] = sapply(df[, cols_vec], as.numeric)
+  return(df)
+}
+
+
+#' Perform Non-Metric Multidimensional Scaling (NMDS) and create a dataframe with metadata
+#'
+#' This function conducts Non-Metric Multidimensional Scaling (NMDS) using the Bray-Curtis distance metric on a given dataset and then combines the resulting NMDS coordinates with metadata.
+#'
+#' @param df (Required) The input dataframe containing the ecological data for NMDS analysis.
+#' @param vec (Required) A vector specifying the two dimensions (axes) to be used for the NMDS plot. These should be column indices from the NMDS result. In this work we used the first and second axes.
+#' @param meta (Required) The metadata dataframe containing information about samples corresponding to the rows in the NMDS dataframe.
+#'
+#' @return A dataframe containing NMDS coordinates (x and y) for the specified dimensions along with associated metadata.
+#'
+#' @details This function performs NMDS on the input dataframe 'df' using the Bray-Curtis distance metric, resulting in a two-dimensional representation of the data. It then combines the NMDS coordinates with the 'meta' dataframe based on a common 'SAMPLE_ID' column. The resulting dataframe includes NMDS coordinates, 'SAMPLE_ID' as row names, and metadata columns from 'meta'.
+#'
+#' @seealso `metaMDS` function from the vegan package for performing NMDS analysis.
+#'
+#' @export
+metaNMDS_bray_and_df = function(df, vec, meta){
+
+  # Perform non-metric multidimensional scaling (NMDS) on the 'df' data
+  # using Bray-Curtis dissimilarity with 2 dimensions (k = 2)
+  # and up to 50 random starts for optimization (trymax = 50)
+  metads <- metaMDS(df, distance = "bray", k = 2, trymax = 50)
+  
+  # Create a data frame 'tdf' with the x and y coordinates of the NMDS result
+  tdf <- data.frame(x = metads$point[, vec[1]], y = metads$point[, vec[2]])
+  
+  # Assign SAMPLE_ID values to the rows of 'tdf'
+  tdf$SAMPLE_ID = rownames(tdf)
+  
+  # Left join 'tdf' with the 'meta' data frame using 'SAMPLE_ID' as the common column
+  tdf = left_join(tdf, meta, by = c('SAMPLE_ID' = 'SAMPLE_ID'))
+  
+  # Set row names of 'tdf' to 'SAMPLE_ID'
+  rownames(tdf) = tdf$SAMPLE_ID
+  
+  
+  return(tdf)
+}
+
+#' This function concatenates the taxonomic information available into a single string for each row or ASV 
+#'
+#' @param df (Required) The input dataframe containing the taxanomic information
+#'
+#' @return A dataframe with the taxonomic names redefined to be concatenated versions of the rows
+#'
+#' @export
+assign_unassigned = function(df){
+  organisms = df %>% select(-ASV_ID) # select all columns not ASV_ID
+  rownames = c()
+  for (rows in 1:nrow(organisms)){ # loop over the rows in the taxonomic information and paste them all columns together into one string
+    rownames = c(rownames, paste0(as.character(organisms[rows,]), collapse = '_'))
+    df[rows,][(df[rows,]=='')] = rownames[rows]
+  }
+  return(df)
+}
+
+#' Converts ASV tables to percentages and attaches taxonomic information
+#'
+#' This function takes ASV (amplicon sequence variant) and taxonomic data, converts them from a wide to long format, and calculates the percentage abundances.
+#'
+#' @param asv (Required) The input dataframe containing ASV data.
+#' @param tax (Required) The dataframe containing taxonomic information corresponding to ASVs.
+#'
+#' @return A dataframe containing ASV data in long format with percentages calculated.
+#'
+#' @details This function combines ASV and taxonomic data, converts the combined dataframe from wide to long format, and calculates the percentage abundances for each ASV. It then returns a dataframe with ASV IDs, taxonomic information, sample IDs, counts, and percentages.
+#'
+#' @export
+long_and_percentage = function(asv, tax){
+  
+  tax = assign_unassigned(tax)
+  
+  asvdt = as.data.table(asv) #convert to data table
+  taxdt = as.data.table(tax) #convert to data table
+  setkey(asvdt, ASV_ID) # set key to ASV column
+  setkey(taxdt, ASV_ID) # set key to ASV column
+  
+  asvtax = asvdt[taxdt] # merge ASV and tax datatable
+  #make datatable long
+  taxonomic_tabble_levels = colnames(tax)[2:length(colnames(tax))] # define the levels in your tax table as a vector
+  
+  longer = data.table::melt(asvtax, value.name = 'count', id.vars = c('ASV_ID', taxonomic_tabble_levels) ,variable.name="SAMPLE_ID") # make wide table long
+  longer = plyr::ddply(longer, .(SAMPLE_ID), transform, percent = count/sum(count) * 100) # calculate percentages
+  return(longer)
+}
+
+#' Create the first panel in the main text Rubisco figure
+#'
+#' This function takes ASV (amplicon sequence variant) and taxonomic data, converts them from a wide to long format, and calculates the percentage abundances.
+#'
+#' @param asvtable (Required) The input dataframe containing ASV data.
+#' @param meta (Required) The dataframe containing metadata information corresponding to ASVs.
+#' @param filter_group (Required) A character string specifying the filter group.
+#' @param legend_position (Optional) Position of the legend in the plot. Defaults to "right".
+#'
+#' @return A dataframe containing ASV data in long format with percentages calculated.
+#'
+#' @details This function combines ASV and taxonomic data, converts the combined dataframe from wide to long format, and calculates the percentage abundances for each ASV. It then returns a dataframe with ASV IDs, taxonomic information, sample IDs, counts, and percentages.
+#'
+#' @export
+plot_panel_1_Rubisco_tax = function(asvtable, meta, filter_group, legend_position){
+  print(meta)
+  #filter for group of interest, select important variables, isolate distinct rows, remove broad peptide, add in depth bins
+  Rubisco_data = meta %>% filter(name_group == filter_group) %>% 
+    select(pmol.L,Modified.Sequence,peptide_names, Sample.name,name_group,Depth) %>% 
+    distinct() %>% 
+    filter(peptide_names != 'Broad') %>% 
+    mutate(Depth_bin = ifelse(Depth %in% c(5), 'Surface','SCM'))
+  
+  Rubisco_data = plyr::ddply(Rubisco_data, .(Sample.name), transform, percent = pmol.L/sum(pmol.L) * 100) # calculate percent abundances
+  
+  #if groups are sverdrup, because of duplicated filters add the percents together to represent both filters or the mean
+  if(filter_group %in% c('SV1','SV7')){
+    Rubisco_data = Rubisco_data %>% group_by(Sample.name, peptide_names) %>% 
+      dplyr::summarise(percent = sum(percent),
+                       pmol.L = first(pmol.L),
+                       Modified.Sequence = first(Modified.Sequence),
+                       Depth = first(Depth),
+                       name_group = first(name_group),
+                       Depth_bin = first(Depth_bin))
+  }
+  
+  # filter out for the name group for the site to plot
+  filt_tax = asvtable %>% 
+    filter(name_group == filter_group)
+  
+  # add in unique identifier to joiner column so that can determine if taxonomy is from 16s or rubisco
+  filt_tax$joiner = paste(filt_tax$SAMPLE_ID, '16S')
+  Rubisco_data$joiner = paste(Rubisco_data$Sample.name, 'Rubisco')
+  
+  #remanme columns to be combined by rows using rbind
+  bound_df_Rubisco = Rubisco_data %>% select(name_group, percent, peptide_names, Sample.name, joiner,Depth_bin) %>% 
+    dplyr::rename(Genus = peptide_names, SAMPLE_ID = Sample.name, SURF_SCM = Depth_bin)
+  bound_df_16s = filt_tax %>% select(name_group, percent, Genus, SAMPLE_ID, joiner,SURF_SCM) 
+  bound_df = rbind(bound_df_16s, bound_df_Rubisco)
+  
+  #colours for plot
+  gg_plot_name_vec = c('Thalassiosirales' = 'darkcyan',
+                       'Chaetoceros' = 'cornsilk2',
+                       'Micromonas' = 'darkseagreen3',
+                       'Phaeocystis' = 'pink3',
+                       'Fragilariopsis/Pseudo-nitzschia'= 'cornsilk4',NAMED_GGPLOT_BAR_COLS)
+  
+  #factoring taxanomy for orderingon the plot
+  bound_df$Genus = factor(bound_df$Genus, levels = rev(c('Thalassiosirales','Thalassiosira','Attheya','Chaetocerotales','Chaetoceros','Coscinodiscophyceae','Rhizosolenia','Cylindrotheca','Fragilariopsis','Cymbellaceae','Cymatosiraceae','Other Diatoms','Cymbomonas','Micromonas','Pyramimonas','Ochromonas','Phaeocystis','Prymnesiophycidae','Prymnesiales','Chrysochromulina','Imantonia','Prymnesium','Pedinella','Florenciella','Eutreptiella','Geminigeraceae','Teleaulax','Archaeplastida','Ochrophyta','Unknown Eukaryota','<1%','Saccharina','Phaeophyceae','Fragilariopsis/Pseudo-nitzschia')))
+  
+  #pull out 16s and Rubisco data identifer into a new column
+  bound_df$dic = ifelse(grepl('16S',bound_df$joiner), '16S','Rubisco')
+  
+  #factor depths 
+  bound_df$SURF_SCM = factor(bound_df$SURF_SCM, levels = c('Surface','SCM'))
+  
+  #factor named color vector to be ordered for plotting
+  gg_plot_name_vec = gg_plot_name_vec[names(gg_plot_name_vec) %in% bound_df$Genus]
+  
+  #create plot for comparison of rubisco and 16s relative taxanomy
+  p2 = ggplot(bound_df, aes(y = (joiner), x = percent, fill = Genus, label = Genus)) + 
+    geom_bar(stat = 'identity',colour='black', size = 0.5) + scale_fill_manual(values=c(gg_plot_name_vec)) +
+    facet_wrap(~SURF_SCM,strip.position = "left", ncol= 1, scales = 'free_y')+
+    labs(fill='16s Phytoplankton Taxonomy')+
+    theme_classic() + theme(legend.position = legend_position,
+                            panel.grid.major = element_blank(),
+                            panel.border = element_rect(color = "black", fill = NA, size = 1),
+                            axis.text.y = element_blank(),
+                            axis.title.x = element_blank(),
+                            axis.title.y = element_blank(),
+                            axis.ticks.y = element_blank(),
+                            strip.text = element_text(size = 16),
+                            axis.text.x = element_text(size = 14)) 
+  return(p2)
+}
+
+#' Create a customized panel plot for nutrient concentrations
+#'
+#' This function generates a customized panel plot that displays nutrient concentrations (SiO4, PO4, and NO3) at different Depths for different name groups. It provides visualizations for nutrient concentration data, allowing for comparison and analysis.
+#'
+#' @param meta A dataframe containing nutrient concentrations and metadata.
+#'
+#' @return A panel plot with nutrient concentration visualizations.
+#'
+#' @details This function performs the following tasks:
+#' 1. Selects relevant columns from the 'meta' dataframe and pivots the data from wide to long format using the 'pivot_longer' function.
+#' 2. Creates a panel plot with geom_point for nutrient concentration data, using 'Depth' as the y-axis and 'concentration' as the x-axis. Different nutrients are represented by different colors and shapes.
+#' 3. Facets the plot by 'name_group' to separate data by groups.
+#' 4. Applies custom theme settings for improved aesthetics.
+#'
+#' @export
+plot_panel_2_Rubisco_2 = function(Rubisco_meta, ctd_data){
+  # Select only relevant columns
+  
+  Rubisco_data = Rubisco_meta %>% 
+    select(pmol.L, Modified.Sequence, peptide_names, Sample.name, name_group, Depth, NO3,SiO4, PO4, carb_fix) %>% 
+    distinct() %>% 
+    filter(peptide_names != 'Broad')
+  
+  # Create a named color vector for the plot
+  gg_plot_name_vec = c('Thalassiosirales' = 'darkcyan',
+                       'Chaetoceros' = 'cornsilk2',
+                       'Micromonas' = 'darkseagreen3',
+                       'Phaeocystis' = 'pink3',
+                       'Fragilariopsis/Pseudo-nitzschia' = 'cornsilk4')
+  
+  # Select and adjust column names for chlorophyll tracer vector
+  chlorophyll_tracer_df = ctd_data %>% 
+    select(station, chla, depth) %>% 
+    dplyr::rename(name_group = station)
+  
+  chlorophyll_tracer_df$name_group = factor(chlorophyll_tracer_df$name_group, levels = c('SV1','SV7','BL1','BL2','BL9','TA7'))
+  
+  # Create a scaling factor for chlorophyll tracer data
+  scaleFactor <- max(chlorophyll_tracer_df$chla, na.rm = TRUE) / max(Rubisco_data$pmol.L, na.rm = TRUE) / 2
+  
+  Rubisco_data$name_group = factor(Rubisco_data$name_group, levels = c('SV1','SV7','BL1','BL2','BL9','TA7'))
+  
+  #create Rubisco dept plot
+  Rubisco_panel_2 = ggplot()+
+    geom_path(data = chlorophyll_tracer_df, aes(y = depth, x = chla*scaleFactor), color = '#2E8B57', alpha = 0.7, size = 1.5)+
+    geom_point(data = Rubisco_data, aes(y = Depth, x = (pmol.L), fill = peptide_names), size = 10, alpha = 0.8, shape = 21) +
+    geom_point(data = Rubisco_data, aes(y = Depth, x = NO3), fill = '#87CEFA', color = 'black', shape = 23, size = 5)+
+    geom_point(data = Rubisco_data, aes(y = Depth, x = SiO4), fill = '#40E0D0', color = 'black', shape = 23, size = 5)+
+    geom_point(data = Rubisco_data, aes(y = Depth, x = PO4), fill = '#ADD8E6', color = 'black', shape = 23, size = 5)+
+    scale_fill_manual(values = gg_plot_name_vec)+
+    scale_y_reverse(limit = c(32, 0))+
+    scale_x_continuous(name="Rubisco (pM)", limits = c(0, 16), sec.axis = sec_axis(~./scaleFactor, name = "Chlorophyll (RFU)"))+
+    ylab('Depth (m)')+
+    facet_wrap(~name_group, nrow = 1, scales = 'free_x') +
+    theme_classic() + 
+    theme(
+      legend.position = 'none',
+      strip.text = element_blank(),
+      panel.border = element_rect(colour = "black", fill = NA, size = 1, linetype = "solid"),
+      panel.grid.major = element_line(color = "gray", linetype = "dashed"),
+      plot.margin = unit(c(1, 1, 1, 1), "cm")) + 
+    my_text_theme(axis_and_tick_size = 17)
+
+  return(Rubisco_panel_2)
+}
+
+#formatting of sample names this should be moved to the actual metadata and the first part of this should be replaced probably
+format_sample_names = function(df){
+
+  #Factor sites from deepest tidewater glacier to shallowest/No tidewater glacier
+  df = df %>% dplyr::mutate(site = case_when(grepl('Talbot.|Belcher.|Sverdrup.|Sydkap.', Sample_Name_Final) ~ 'Strong tidewater glacier influence',
+                                             grepl('Starnes1.|Jakeman.|Starnes2.', Sample_Name_Final) ~ 'Weak tidewater glacier influence',
+                                             grepl('JonesSound.|NaresStrait.', Sample_Name_Final) ~ 'Open Water',
+                                             TRUE ~ 'No tidewater glacier Influence'))
+  
+  df$site = factor(df$site, levels = c('Open Water','No tidewater glacier Influence','Weak tidewater glacier influence','Strong tidewater glacier influence'))
+  
+  site_fac = c('GriseFiord.27_20', 'GriseFiord.27_5', 'GriseFiord.28_5',
+               'Harbour.39_5', 'Harbour.40_20', 'Harbour.40_5',
+               'Starnes2.10_5', 'Starnes2.11_5','Starnes2.11_25',
+               'Starnes1.6_20', 'Starnes1.6_5', 'Starnes1.7_25',  'Starnes1.7_5',
+               'Jakeman.3_20', 'Jakeman.3_5', 'Jakeman.40b_20', 'Jakeman.40b_5', 'Jakeman.41b_20', 'Jakeman.41b_5','Jakeman.42b_20', 'Jakeman.42b_5', 'Jakeman.44b_20', 'Jakeman.44b_5', 'Jakeman.46b_20', 'Jakeman.46b_5', 'Jakeman.5_20','Jakeman.5_5', 'Jakeman.50_20', 'Jakeman.50_5',
+               'Sydkap.12_20', 'Sydkap.12_5', 'Sydkap.13_5', 'Sydkap.13_20',  'Sydkap.14_20', 'Sydkap.14_5','Sydkap.16_5', 'Sydkap.18_20', 'Sydkap.18_5',
+               'Sverdrup.1_18',   'Sverdrup.1_5', 'Sverdrup.11_8', 'Sverdrup.11_5', 'Sverdrup.14_18', 'Sverdrup.14_5', 'Sverdrup.15_28', 'Sverdrup.15_5', 'Sverdrup.2_18', 'Sverdrup.2_5', 'Sverdrup.20_5', 'Sverdrup.3_20', 'Sverdrup.3_5', 'Sverdrup.5_8', 'Sverdrup.5_5', 'Sverdrup.7_15', 'Sverdrup.7_5',
+               'Belcher.1_5', 'Belcher.1_30', 'Belcher.11_30', 'Belcher.11_5', 'Belcher.13_35', 'Belcher.13_5', 'Belcher.14_30', 'Belcher.14_5', 'Belcher.3_45', 'Belcher.3_5', 'Belcher.5_20', 'Belcher.5_5', 'Belcher.9_5', 'Belcher.9_30','Talbot.5_25', 'Talbot.5_5', 'Talbot.6_40', 'Talbot.6_5', 'Talbot.7_15', 'Talbot.7_5', 'Talbot.8_20', 'Talbot.8_5')
+  
+  df$Sample_Name_Final %in% site_fac
+  
+  df$Sample_Name_Final <- factor(df$Sample_Name_Final, levels = site_fac) 
+  
+  return(df)
+}
+
+#' Select and preprocess specific variables from a metadata dataframe
+#'
+#' This function allows you to select and preprocess specific variables from a metadata dataframe. You can choose the variables of interest and apply optional filtering and removal of rows with missing values.
+#'
+#' @param meta A dataframe containing metadata.
+#' @param vars_to_be_selected A vector containing strings which correspond to the columns you would like to select.
+#' @param filter_by_50m (Optional) A logical value indicating whether to filter rows based on the 'Depth' column. Default is FALSE.
+#' @param na_o (Optional) A logical value indicating whether to remove rows with missing values in the selected variables. Default is FALSE.
+#'
+#' @return A dataframe containing the selected variables from the metadata dataframe, optionally filtered and optionally with missing values removed.
+#'
+#' @details This function allows you to extract specific variables ('vars_to_be_selected') from the input 'meta' dataframe. You can choose to filter rows based on the 'Depth' column if 'filter_by_50m' is set to TRUE. Additionally, you can remove rows with missing values in the selected variables if 'na_o' is set to TRUE.
+#'
+#' @export
+select_vars = function(meta,vars_to_be_selected, filter_by_50m, na_o){
+  # allows you to use tidyr functions with items in vector 
+  vars_to_be_selected_enquo = enquo(vars_to_be_selected) 
+  
+  #optional removing of all but the upper 40m of the data 
+  if(!missing(filter_by_50m) & filter_by_50m == T){ 
+    meta %<>% filter(Depth < 40) 
+  }
+  
+  #select only colums of interest
+  PO_meta = meta %>% select(!! vars_to_be_selected_enquo)
+  
+  #optional removing rows containing missing data (ignoring the SAMPLE_ID column)
+  if(!missing(na_o) & na_o == T){
+    PO_meta %<>% na.omit(.[,2:ncol(.)])
+  }
+  
+  return(PO_meta)
+}
+
+#' Create a PCA (Principal Component Analysis) plot with customization options
+#'
+#' This function performs Principal Component Analysis (PCA) on ecological data, generates a PCA plot, and customizes the plot's appearance and annotations. It allows you to specify various parameters and options for visualizing the PCA results.
+#'
+#' @param pca_meta (required) A dataframe containing numeric metadata for PCA
+#' @param full_meta (required) A dataframe containing both numeric as well as categorical metadata for plotting PCA
+#' @param scl (Optional) A logical value indicating whether to scale the data before performing PCA. Default is TRUE.
+#' @param vectors (required) A character vector specifying the column names from the 'meta' dataframe to be plotted as vectors on the PCA plot.
+#@something LAKSJD:LASKJD:LASKJD:LJ may want to remove this option to scale
+#'
+#'
+#' @return A PCA plot with customizable appearance and annotations.
+#'
+#' @details This function conducts PCA on the input data, scales it if specified, and extracts the first two principal components. It calculates the proportion of variance explained by each component and generates a PCA plot with points colored by the 'Glacier_Name' column and shaped by the 'SURF_SCM' column. Additionally, it plots vectors representing specified metadata columns ('vectors') on the PCA plot.
+#'
+#' @seealso `prcomp` function from the stats package for PCA analysis, and `ggplot2` package for creating the PCA plot.
+#'
+#' @export
+make_pca_plot = function(pca_meta, full_meta, scl, vectors){
+  # check if the values are to be scaled 
+  if(!missing(scl) & scl == T){ 
+    pcadf = scale(pca_meta[,2:ncol(pca_meta)])
+  }
+  
+  # make rownames of the dataframe the sample IDs 
+  rownames(pca_meta) = pca_meta$SAMPLE_ID
+  
+  # select columns to be used in PCA
+  meta_filt = pca_meta %>% select(all_of(vectors), -SAMPLE_ID) %>% na.omit()
+  
+  # perform PCA 
+  pca_data <- prcomp(meta_filt, scale =T)  
+  
+  # determine proportion of variance explained by axis 1 and 2
+  sumx = summary(pca_data)
+  prop_explained = sumx$importance[2,1:2]
+  
+  # Create a data frame for PCA plot with the first two principal components
+  pca_plot = as.data.frame(pca_data$x[,1:2])
+  pca_plot$SAMPLE_ID = rownames(pca_plot)
+  #add in the rest of the metadata usch as chategorical variables
+  pca_plot = left_join(pca_plot, full_meta, by = 'SAMPLE_ID')
+  
+  # Perform vector fitting using envfit and store the results in vecs
+  vecs = envfit(pca_plot[,1:2], pca_plot[,colnames(pca_plot) %in% vectors], permutations = 999,na.rm = T)
+  # Convert the vector fitting scores into a data frame
+  vecs_df <- as.data.frame(vegan::scores(vecs, display = "vectors"))
+  vecs_df <- cbind(vecs_df, Variables = rownames(vecs_df))
+  
+  # Assign landtype values based on the Glacier_Name column
+  pca_plot$landtype = ifelse(pca_plot$Glacier_Name %in% c('Sverdrup','Belcher','Talbot Inlet', 'Sydkap'),'strongTWG','open')
+  pca_plot$landtype = ifelse(pca_plot$Glacier_Name %in% c('Starnes.1','Starnes.2','Jakeman'),'weakTWG',pca_plot$landtype)
+  pca_plot$landtype = ifelse(pca_plot$Glacier_Name %in% c('Grise Fiord','Harbour'),'land',pca_plot$landtype)
+  
+  #create PCA plot
+  temp_plot = ggplot(pca_plot) + geom_point(data  = pca_plot, mapping = aes(x = PC1, y = PC2, fill = Glacier_Name, shape = SURF_SCM), size=15, alpha = .8) +
+    scale_fill_manual(values = GLACIATION_COLORS) +
+    scale_shape_manual(values=c(21,23)) +
+    scale_color_manual(values=c(GLACIATION_COLORS)) +
+    coord_fixed()  + 
+    #add in vector arrows
+    geom_segment(data = vecs_df,
+                 aes(x = 0, xend = PC1*3, y = 0, yend = PC2*3),
+                 arrow = arrow(length = unit(0.25, "cm")), colour = "grey4") +
+    geom_text(data = vecs_df, aes(x = PC1*3, y = PC2*3, label = Variables),
+              size = 10) +
+    guides(fill=guide_legend(override.aes=list(shape=21))) + 
+    xlab((names(pca_plot)[1])) +
+    ylab((names(pca_plot)[2])) +
+    theme_bw() + 
+    theme(
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      legend.position = 'none') +
+    my_text_theme()
+  return(temp_plot)
+}
+
+#' Get Transformed ASV Table
+#'
+#' This function generates a transformed ASV (Amplicon Sequence Variant) table based on specified criteria. It manipulates the ASV table by filtering and transforming data.
+#'
+#' @param ASVs Logical value indicating whether to include ASVs (Amplicon Sequence Variants) in the output. Default is FALSE.
+#' @param spec Logical value indicating whether to specify species in the output. Default is FALSE.
+#'
+#' @return Transformed ASV table based on specified criteria.
+#'
+#' @details This function processes the ASV table based on the input parameters. It filters the data, calculates percentages, and transforms taxonomic information.
+#'
+#' @export
+get_transformed_ASV_table = function(ASVs = F, spec = F){
+  
+  #grab asv table
+  asvs_table = ASV_table
+  
+  #convert assv to long format and percentages - see long_and_percentage() function
+  long = long_and_percentage(asvs_table, phytoref_table)
+  
+  #if ASVs == T then we want to conisder all the ASVs. This is used to see which Chaetoceros and Thalassiosirales ASVs are differentially abundant
+  if(ASVs == T){
+    long$Genus = ifelse(long$Genus == 'Chaetoceros', paste('Chaetoceros',long$ASV_ID,sep = '_'),long$Genus)
+    
+    long$Genus = ifelse(long$Genus == 'Eukaryota_Stramenopiles_Ochrophyta_Bacillariophyta_Coscinodiscophyceae_Thalassiosirales_Thalassiosirales_X___', paste('Eukaryota_Stramenopiles_Ochrophyta_Bacillariophyta_Coscinodiscophyceae_Thalassiosirales_Thalassiosirales_X___',long$ASV_ID,sep = '_'),long$Genus) 
+  }
+  
+  #group by either genus or speices if spec == T
+  vec =  c('SAMPLE_ID','Genus')
+  if(spec == T){
+    vec =  c('SAMPLE_ID','Species')
+  }
+  perc = 1
+  tax_plot_df = long %>% #group by site and tatax_plot_dfa level
+    dplyr::group_by(dplyr::across(vec)) %>%
+    dplyr::summarise(sum(percent))
+  
+  #join taxa information and metadata
+  tax_plot_df = left_join(tax_plot_df, meta_16s, by = 'SAMPLE_ID')
+  
+  #figure out taxa less than 1% abundant
+  tax_plotphyto_less_than1 = tax_plot_df[tax_plot_df$`sum(percent)` < 1,]
+  
+  # a separate grouping when grouping by ASVs
+  if(ASVs == T){
+    tax_plot_df_chae = long %>% #group by site and tax level
+      dplyr::group_by(dplyr::across(vec)) %>%
+      dplyr::summarise(sum(percent))
+    tax = ifelse(tax_plot_df$`sum(percent)` < perc, paste('<',as.character(perc),'%'), as.vector(tax_plot_df[[vec[2]]])) # figure out which taxa are below 1%
+    tax_plot_df_chae[[vec[2]]] = ifelse(grepl('chaetoceros', tax_plot_df_chae[[vec[2]]], ignore.case = T), tax_plot_df_chae[[vec[2]]], tax) # reset taxa column to be the new one with taxa less than 1% named that
+  } else{ # when not grouping by ASV
+    tax = ifelse(tax_plot_df$`sum(percent)` < perc, paste('<',as.character(perc),'%'), as.vector(tax_plot_df[[vec[2]]])) # figure out which taxa are below 1%
+    tax_plot_df[[vec[2]]] = tax # reset taxa column to be the new one with taxa less than 1% named that  
+  }
+
+  
+  tax_plot_df = tax_plot_df %>% #group by site and tatax_plot_dfa level
+    dplyr::group_by(dplyr::across(vec)) %>%
+    dplyr::summarise(`sum(percent)` = sum(`sum(percent)`))
+  tax_plot_df = left_join(tax_plot_df, meta_16s, by = 'SAMPLE_ID')
+  
+  # condition satement when grouping by species
+  if(spec == T){
+    return(tax_plot_df)
+  }
+  
+  #manually adjust taxa names to be lowest resolved level
+  tax_plot_df$Genus = ifelse(('Eukaryota_Stramenopiles_Ochrophyta_______' == tax_plot_df$Genus), 'Ochrophyta', tax_plot_df$Genus)
+  tax_plot_df$Genus = ifelse(('Eukaryota_________' == tax_plot_df$Genus), 'Unknown Eukaryota', tax_plot_df$Genus)
+  tax_plot_df$Genus = ifelse(('Eukaryota_Stramenopiles_Ochrophyta_Phaeophyceae_Phaeophyceae_X_____' == tax_plot_df$Genus), 'Phaeophyceae', tax_plot_df$Genus)
+  tax_plot_df$Genus = ifelse(('Eukaryota_Stramenopiles_Ochrophyta_Bacillariophyta_Bacillariophyceae_Cymbellales_Cymbellales_X_Cymbellaceae__' == tax_plot_df$Genus), 'Cymbellaceae', tax_plot_df$Genus)
+  tax_plot_df$Genus = ifelse(('Eukaryota_Stramenopiles_Ochrophyta_Bacillariophyta_Coscinodiscophyceae_Cymatosirales_Cymatosirales_X_Cymatosiraceae__' == tax_plot_df$Genus), 'Cymatosiraceae', tax_plot_df$Genus)
+  tax_plot_df$Genus = ifelse(('Eukaryota_Stramenopiles_Ochrophyta_Bacillariophyta_Coscinodiscophyceae_Chaetocerotales____' == tax_plot_df$Genus), 'Chaetocerotales', tax_plot_df$Genus)
+  tax_plot_df$Genus = ifelse(('Eukaryota_Stramenopiles_Ochrophyta_Bacillariophyta_Coscinodiscophyceae_____' == tax_plot_df$Genus), 'Coscinodiscophyceae', tax_plot_df$Genus)
+  tax_plot_df$Genus = ifelse(('Eukaryota_Hacrobia_Haptophyta_Prymnesiophyceae_Prymnesiophyceae_X_Prymnesiales_Prymnesiales_X___' == tax_plot_df$Genus), 'Prymnesiales', tax_plot_df$Genus)
+  tax_plot_df$Genus = ifelse(('Eukaryota_Stramenopiles_Ochrophyta_Bacillariophyta_Coscinodiscophyceae_Thalassiosirales_Thalassiosirales_X___' == tax_plot_df$Genus), 'Thalassiosirales', tax_plot_df$Genus)
+  tax_plot_df$Genus = ifelse(('Eukaryota_Stramenopiles_Ochrophyta_Bacillariophyta______' == tax_plot_df$Genus), 'Other Diatoms', tax_plot_df$Genus)
+  tax_plot_df$Genus = ifelse(('Eukaryota_Stramenopiles_Ochrophyta_Bacillariophyta_Bacillariophyceae_____' == tax_plot_df$Genus), 'Other Diatoms', tax_plot_df$Genus)
+  tax_plot_df$Genus = ifelse(('Eukaryota_Hacrobia_Cryptophyta_Cryptophyceae_Cryptophyceae_X_Pyrenomonadales_Pyrenomonadales_X_Geminigeraceae__' == tax_plot_df$Genus), 'Geminigeraceae', tax_plot_df$Genus)
+  tax_plot_df$Genus = ifelse(('< 1 %' == tax_plot_df$Genus), '<1%', tax_plot_df$Genus)
+  tax_plot_df$Genus = ifelse(('>1%' == tax_plot_df$Genus), '<1%', tax_plot_df$Genus)
+  #tax_plot_df$Genus = ifelse(('Chaetoceros' == tax_plot_df$Genus), 'Chaetocerotales', tax_plot_df$Genus)
+  tax_plot_df$Genus = ifelse(('S25_1200' == tax_plot_df$Genus), 'Prymnesiophycidae', tax_plot_df$Genus)
+  tax_plot_df$Genus = ifelse(('Eukaryota_Archaeplastida________' == tax_plot_df$Genus), 'Archaeplastida', tax_plot_df$Genus)
+  
+  # conditional if grouped by ASV level
+  if(ASVs == T){
+    thal_asvs = c('Thalassiosirales_2f5aa72df391f52ec413e475e57ff780','Thalassiosirales_407aa2fa0bb011a208cc78e626f4b97e','Thalassiosirales_f8399f32e8dfcdc23f00ca51baf5465f','Thalassiosirales_a8c502eada02bff3832fadaeeb970d37','Thalassiosirales_3d22b1f45299878876ae58dc8d1fc1fd','Thalassiosirales_fb1b0475cfebe20db31f09f8637bfc88','Thalassiosirales_63df205adac47749da389eec213a5596','Thalassiosirales_f097eceded681a0a431b9837f4b625af')
+    low_thal_asvs = c('Thalassiosirales_0aa1fc664788d37014f9620c1aa573c5','Thalassiosirales_17d608fa4efc4b0142f3f57316b9347b','Thalassiosirales_19a147ebf2d6b562be3e657b17b4d7e4','Thalassiosirales_20d8e44e504d93f18237b12f3063ef84','Thalassiosirales_247128d1dc17071e898cfb95952a873d','Thalassiosirales_33481e3d11e6a697c1c472c32a2f7000','Thalassiosirales_3e80b0e1316380468fefa3d5c631885a','Thalassiosirales_40e30d9c68ca1abdcc6dbab97e40a915','Thalassiosirales_48ee52ab599d40c06a0c2f082b686114','Thalassiosirales_593de737d56c1548c31ad1f3499a391a','Thalassiosirales_733e52c722eeb7773b453aa593455a40','Thalassiosirales_733f3644fd074636d79d6c759ab1ee0c','Thalassiosirales_8a152c27b35b5fe9c6524fd10be77791','Thalassiosirales_9333dac9f93c4db329b488f65fc3f0cb','Thalassiosirales_9fb5047f6195a34fba9fc359a618e67d','Thalassiosirales_c1c5dda57f8179af8d6e10b47717c624','Thalassiosirales_d3b09e719aa99b70e17133b6ea4b45f3','Thalassiosirales_d8cbb93f7eb65d292aa9abdf5e7b4dc8','Thalassiosirales_e6433dcabc5cb4f138923b1143181476','Thalassiosirales_e8321483aa547b98048e6c3956d14390','Thalassiosirales_ee5bebc0db03d0df6b5ec216e3714a65','Thalassiosirales_f8c26fffada8b02b2813a0ce85e4dc46')
+    
+    extra_chaetoceros_asvs = c('Chaetoceros_12047c66fdcd8377f9c10e12a467c8af', 'Chaetoceros_29cb2481ae8052858d3b829d5b09f329', 'Chaetoceros_878a0f022acbd3a4183d6edb604dd294', 'Chaetoceros_92e16f8b5fae411893315f7b82e34267', 'Chaetoceros_933f88cdb150949f93603b7063a29d13', 'Chaetoceros_98245c1a36cc76ba6df508fec401f1e6', 'Chaetoceros_cc2c1003c848483b6e6c8833d33fc4b9', 'Chaetoceros_e616e6429fd4dd63a4c30b45353ce8e3', 'Chaetoceros_eb3430318606d9a8c0ca5f39abc13657', 'Chaetoceros_eb9864a344ab7dfa9bf8cf7cdc5d010b', 'Chaetoceros_fbebc5e1927c1a913503097f4e8b9ac9')
+    
+    tax_plot_df$Genus = str_replace(tax_plot_df$Genus,'Eukaryota_Stramenopiles_Ochrophyta_Bacillariophyta_Coscinodiscophyceae_Thalassiosirales_Thalassiosirales_X____', 'Thalassiosirales_')
+    
+    #factoring for chaetoceros and thalassiosirales asvs
+    tax_plot_df$Genus = factor(tax_plot_df$Genus, levels = c('Thalassiosirales','Thalassiosira','Attheya','Chaetocerotales','Chaetoceros',thal_asvs, low_thal_asvs,
+                                                                       'Chaetoceros_5f156339129be7a73e2c1b7667142d6b','Chaetoceros_793ce22e648cb340d83e5beec7973160','Chaetoceros_7f1627bcfc02d2dd816fd72359d3a43d',
+                                                                       'Chaetoceros_574ead9f8c226da7644d549926cf0a90','Chaetoceros_b97c451887c5727cea935538f4363ea6',
+                                                                       'Chaetoceros_b60882e9f7dd4f4140bbd21f08f9cda4','Chaetoceros_ef04f64d3f06f3b251bbf61d58f09e2f','Chaetoceros_b70d6f6a61ec9dc2ea1d844151f61697','Chaetoceros_a89fc38dcaa26f416aa5b1a1faeec8f5','Chaetoceros_91be77d9ddb77073471da7decc83ddba',extra_chaetoceros_asvs,
+                                                                       'Other Diatoms','Eutreptiella','Ochromonas','Pedinella','Chrysochromulina',
+                                                                       'Cymbomonas','Coscinodiscophyceae','Micromonas','Rhizosolenia','Ochrophyta',
+                                                                       'Fragilariopsis','Phaeocystis','Pyramimonas','Prymnesiales','Imantonia','Cylindrotheca',
+                                                                       'Geminigeraceae','Teleaulax','Prymnesiophycidae','Prymnesium','Saccharina','Florenciella',
+                                                                       'Phaeophyceae','Unknown Eukaryota','Cymbellaceae','Cymatosiraceae','Archaeplastida','<1%'))
+    
+    asv_counter = 1
+    asv_counter2 = 1
+    
+    # Iterate through the vector and make replacements
+    new_names = levels(tax_plot_df$Genus)
+    
+    #loop to convert from unique ASV IDs which are characters and nums and make the ASV1, ASV2, ASVx...
+    for (i in 1:length(new_names)) {
+      if (grepl("^Chaetoceros_", new_names[i])) {
+        new_names[i] = paste("Chaetoceros_", "ASV", asv_counter, sep="")
+        asv_counter = asv_counter + 1
+      } else if (grepl("^Thalassiosirales_", new_names[i])){
+        new_names[i] = paste("Thalassiosirales_", "ASV", asv_counter2, sep="")
+        asv_counter2 = asv_counter2 + 1
+      }
+    }
+    #factor names
+    names(new_names) = levels(tax_plot_df$Genus)
+    
+    tax_plot_df$Genus = unname(new_names[tax_plot_df$Genus])
+    
+    #factor names for plotting
+    tax_plot_df$Genus = factor(tax_plot_df$Genus, levels =  c(
+      'Thalassiosirales','Thalassiosira','Attheya','Chaetocerotales','Chaetoceros','Thalassiosirales_ASV1','Thalassiosirales_ASV2','Thalassiosirales_ASV3','Thalassiosirales_ASV4','Thalassiosirales_ASV5','Thalassiosirales_ASV6','Thalassiosirales_ASV7','Thalassiosirales_ASV8','Thalassiosirales_ASV9','Thalassiosirales_ASV10','Thalassiosirales_ASV11','Thalassiosirales_ASV12','Thalassiosirales_ASV13','Thalassiosirales_ASV14','Thalassiosirales_ASV15','Thalassiosirales_ASV16','Thalassiosirales_ASV17','Thalassiosirales_ASV18','Thalassiosirales_ASV19','Thalassiosirales_ASV20','Thalassiosirales_ASV21','Thalassiosirales_ASV22','Thalassiosirales_ASV23','Thalassiosirales_ASV24','Thalassiosirales_ASV25','Thalassiosirales_ASV26','Thalassiosirales_ASV27','Thalassiosirales_ASV28','Thalassiosirales_ASV29','Thalassiosirales_ASV30','Chaetoceros_ASV1','Chaetoceros_ASV2','Chaetoceros_ASV3','Chaetoceros_ASV4','Chaetoceros_ASV5','Chaetoceros_ASV6','Chaetoceros_ASV7','Chaetoceros_ASV8','Chaetoceros_ASV9','Chaetoceros_ASV10','Chaetoceros_ASV11','Chaetoceros_ASV12','Chaetoceros_ASV13','Chaetoceros_ASV14','Chaetoceros_ASV15','Chaetoceros_ASV16','Chaetoceros_ASV17','Chaetoceros_ASV18','Chaetoceros_ASV19','Chaetoceros_ASV20','Chaetoceros_ASV21', 'Other Diatoms', 'Eutreptiella', 'Ochromonas', 'Pedinella', 'Chrysochromulina',
+      'Cymbomonas', 'Coscinodiscophyceae', 'Micromonas', 'Rhizosolenia', 'Ochrophyta', 'Fragilariopsis',
+      'Phaeocystis', 'Pyramimonas', 'Prymnesiales', 'Imantonia', 'Cylindrotheca', 'Geminigeraceae',
+      'Teleaulax', 'Prymnesiophycidae', 'Prymnesium', 'Saccharina', 'Florenciella', 'Phaeophyceae',
+      'Unknown Eukaryota', 'Cymbellaceae', 'Cymatosiraceae', 'Archaeplastida', '<1%'))
+    
+    
+  }
+  else{
+    tax_plot_df$Genus = factor(tax_plot_df$Genus, levels = c('Thalassiosirales','Thalassiosira','Attheya','Chaetocerotales','Chaetoceros','Coscinodiscophyceae','Rhizosolenia','Cylindrotheca','Fragilariopsis','Cymbellaceae','Cymatosiraceae','Other Diatoms','Cymbomonas','Micromonas','Pyramimonas','Ochromonas','Phaeocystis','Prymnesiophycidae','Prymnesiales','Chrysochromulina','Imantonia','Prymnesium','Pedinella','Florenciella','Eutreptiella','Geminigeraceae','Teleaulax','Archaeplastida','Ochrophyta','Unknown Eukaryota','<1%','Saccharina','Phaeophyceae'))  
+  }
+  
+  
+  #regroup across vector to sum together renamed taxa that now have same names
+  tax_plot_df2 = tax_plot_df %>% group_by(dplyr::across(vec)) %>% 
+    dplyr::summarise(percent = sum(`sum(percent)`))
+  
+  # add in metadata
+  tax_plot_df2 = left_join(tax_plot_df2, meta_16s, by = 'SAMPLE_ID')
+  
+  # add in name_group column to specify site
+  tax_plot_df2$name_group = str_split(tax_plot_df2$SAMPLE_ID,'_',simplify = T)[,1]
+
+  return(tax_plot_df2)  
+}
+
+#' Create a custom text-based theme for ggplot2 plots
+#'
+#' This function generates a custom theme for ggplot2 plots with text-related modifications. It allows you to control the size of axis titles, axis labels, and tick labels, as well as the appearance of panel borders.
+#'
+#' @param axis_and_tick_size (Optional) The font size for axis titles, axis labels, and tick labels. Default is 25.
+#'
+#' @return A ggplot2 theme object that can be applied to ggplot objects with customized text properties.
+#'
+#' @details This function defines a custom ggplot2 theme that allows you to adjust the font size of axis titles, axis labels, and tick labels. It also adds a black border to the plot panel to enhance its visibility. You can specify the desired font size for these text elements using the 'axis_and_tick_size' parameter.
+#'
+#' @export
+my_text_theme = function(axis_and_tick_size = 25) {
+  theme(axis.title.x = element_text(size = axis_and_tick_size),
+        axis.title.y = element_text(size = axis_and_tick_size), 
+        axis.text.x = element_text(size = axis_and_tick_size),
+        axis.text.y = element_text(size = axis_and_tick_size),
+        panel.border = element_rect(size = 2, color = "black"))
+}
+
+
+```
+
+## Global variables
+```{r This chunk is for instantiating global varaibles}
+
+CURRENT_DATE = Sys.Date() # date for saving plot files
+
+# directory for where to save plots
+PLOT_DIR = '/Users/patrickwhite/Documents/GitHub/CAA_TWG_2024/CAA_TWG_2024_BL/CAA_PPCC_2024/plot_outputs/' 
+
+# barplot colors 
+GGPLOT_BAR_COLS = c('darkcyan','thistle3','darkorange2','#F39B7FB2','cornsilk2','tan1','ivory1','lightsteelblue3','thistle2','mediumaquamarine','palevioletred4','indianred3','darkseagreen3','plum','darkblue','cornsilk4','pink3','moccasin','blue1','gold1','cyan1','tomato2','tomato3','palevioletred1','salmon2','mediumorchid4','palegreen','yellow3','darkorange4','orange3','wheat', 'green','tan') 
+
+# named barplot colors with taxonomic groups
+NAMED_GGPLOT_BAR_COLS = c(
+  'Thalassiosirales' = 'darkcyan' ,
+  'Thalassiosira' = 'thistle3' ,
+  'Attheya' = 'darkorange2' ,
+  'Chaetocerotales' = '#F39B7FB2' ,
+  'Chaetoceros' = 'cornsilk2' ,
+  'Other Diatoms' = 'tan1' ,
+  'Eutreptiella' = 'ivory1' ,
+  'Ochromonas' = 'lightsteelblue3' ,
+  'Pedinella' = 'thistle2' ,
+  'Chrysochromulina' = 'mediumaquamarine' ,
+  'Cymbomonas' = 'palevioletred4' ,
+  'Coscinodiscophyceae' = 'indianred3' ,
+  'Micromonas' = 'darkseagreen3' ,
+  'Rhizosolenia' = 'plum' ,
+  'Ochrophyta' = 'darkblue' ,
+  'Fragilariopsis' = 'cornsilk4' ,
+  'Phaeocystis' = 'pink3' ,
+  'Pyramimonas' = 'tan' ,
+  'Prymnesiales' = 'blue1' ,
+  'Imantonia' = 'gold1' ,
+  'Cylindrotheca' = 'cyan1' ,
+  'Geminigeraceae' = 'tomato2' ,
+  'Teleaulax' = 'tomato3' ,
+  'Prymnesiophycidae' = 'palevioletred1' ,
+  'Prymnesium' = 'salmon2' ,
+  'Florenciella' = 'mediumorchid4' ,
+  'Unknown Eukaryota' = 'palegreen' ,
+  'Cymbellaceae' = 'yellow3' ,
+  'Cymatosiraceae' = 'darkorange4' ,
+  'Archaeplastida' = 'orange3' ,
+  '<1%' = 'wheat'
+)
+
+#color for sites
+GLACIATION_COLORS = c('Grise Fiord'="#FDB777",
+                                  'Harbour'="#C7622B",
+                                  'Starnes.2'="#1560bd",
+                                  'Starnes.1'="#107DAC",
+                                  'Jakeman'="#71C7EC",
+                                  'Sverdrup'="#DADAEB",
+                                  'Sydkap'="#B47ee5",
+                                  'Belcher'="#6A51A3",
+                                  'Talbot Inlet'="#29021A",
+                                  'strongTWG' = "#6A51A3",
+                                  'weakTWG' = "#71C7EC",
+                                  'land' = "#FDB777")
+
+```
+
+
+## Intro code where you instatiate data, and prune metadata
+```{r Data Preparation and Cleaning}
+set.seed(1234)
+
+#read in ASV table
+ASV_table = read.csv('/Users/patrickwhite/Documents/GitHub/CAA_TWG_2024/CAA_TWG_2024_BL/CAA_PPCC_2024/formated_ASVs_chl_CAA_PPCC_04242024.csv')
+
+#read in taxonomic table
+phytoref_table = read.csv('/Users/patrickwhite/Documents/GitHub/CAA_TWG_2024/CAA_TWG_2024_BL/CAA_PPCC_2024/formated_phytoref_chl_CAA_PPCC_04242024.csv')
+
+meta_16s = read.csv('/Users/patrickwhite/Documents/GitHub/CAA_TWG_2024/CAA_TWG_2024_BL/CAA_PPCC_2024/devon_metadata_microbial_2021_5m_meaned_complete_06_05_2024.2.csv')
+
+meta_16s = format_sample_names(meta_16s)
+
+names(meta_16s)
+# you are too 
+meta_16s = plyr::rename(meta_16s, c('Temperature' = 'Temperature',
+                         'Salinity' = 'Salinity',
+                         'Turbidity' = 'Turbidity',
+                         'Chlorophyl.a' = 'Chlorophyl a',
+                         'Dissolved.O2' = 'Dissolved O2'))
+
+unique(meta_16s$Glacier_Name)
+
+#add in landtypes
+meta_16s$landtype = ifelse(meta_16s$Glacier_Name == 'Jakeman', 'weakTWG',
+       ifelse(meta_16s$Glacier_Name == 'Belcher', 'strongTWG',
+              ifelse(meta_16s$Glacier_Name == 'Sverdrup', 'strongTWG',
+                     ifelse(meta_16s$Glacier_Name == 'Nares Strait', 'open',
+                            ifelse(meta_16s$Glacier_Name == 'Jones Sound', 'open',
+                                   ifelse(meta_16s$Glacier_Name == 'Starnes.1', 'weakTWG',
+                                          ifelse(meta_16s$Glacier_Name == 'Talbot Inlet', 'strongTWG',
+                                                 ifelse(meta_16s$Glacier_Name == 'Sydkap', 'strongTWG',
+                                                        ifelse(meta_16s$Glacier_Name == 'Starnes.2', 'weakTWG',
+                                                               ifelse(meta_16s$Glacier_Name == 'Harbour', 'land',
+                                                                      ifelse(meta_16s$Glacier_Name == 'Grise Fiord', 'land','not')
+                                                                      ))))))))))
+
+
+# convert columns to numeric
+meta_16s = make_columns_numeric(df = meta_16s,
+                                cols_vec = c('Depth','Temperature','Salinity',
+            'Dissolved O2','Chlorophyl a','Turbidity','SiO4','PO4','NH3','NO3','NO2'))
+```
+
+
+## Main map ggoceanmaps portion 
+```{r}
+#create map gird and define boundaries
+dt = expand.grid(lon = c(-75, -95), lat = c(74, 85))
+map1 = basemap(data = dt, glaciers = T, bathymetry = T)  
+
+#save map
+file_extension = 'pdf'
+ggsave(paste0(PLOT_DIR,'map_fig_1_',CURRENT_DATE,'.',file_extension),map1, 
+      device = file_extension, width = 6000, height = 4000, units = 'px')  
+```
+
+
+## Main and supp community composition plots
+```{r} 
+# get asv_table using get_transformed_ASV_table() - see custom functions section
+tax_plot_df = get_transformed_ASV_table()
+
+# format sample IDs using format_sample_names() - see custom functions section
+tax_plot_df = format_sample_names(tax_plot_df)
+
+# add in land type names
+LAND_TYPE_NAMES = c('strongTWG' = 'Strong tidewater glacier influence', 'weakTWG' = 'Weak tidewater glacier influence', 'land' = 'No tidewater glacier')
+
+# filter for Chaetoceros genus
+ tax_plot_df[tax_plot_df$Genus == 'Chaetoceros',] %>% 
+  group_by(Genus) %>% 
+  dplyr::summarise(mean(percent))
+
+#find mean percent of each of these groups 
+tax_plot_df[tax_plot_df$Genus %in% c('Chaetocerotales','Chaetoceros','Micromonas','Thalassiosirales'),] %>% 
+  group_by(Genus) %>% 
+  dplyr::summarise(mean(percent))
+
+#mean chaetoceros percent talbot
+tax_plot_df %>% filter(Glacier_Name == 'Talbot Inlet') %>% filter(Genus == 'Chaetoceros') %>% select(percent) %>% summary()
+
+#info on ohchromonas at SV
+tax_plot_df %>% filter(Glacier_Name == 'Belcher') %>% filter(Genus == 'Ochromonas') %>% select(percent) %>% summary()
+
+#info on micromonas at belcher
+tax_plot_df %>% filter(Glacier_Name == 'Belcher') %>% filter(Genus == 'Micromonas') %>% select(percent) %>% summary()
+
+# factor sites for plot facet_grid order 
+tax_plot_df$site = factor((LAND_TYPE_NAMES[tax_plot_df$landtype]), levels = c( 'No tidewater glacier', 'Weak tidewater glacier influence','Strong tidewater glacier influence'))
+
+# for double checking the legend part of the plot 
+rel_abund_plot_legend = ggplot(tax_plot_df, aes(x = (Sample_Name_Final), y = percent, fill = Genus, label = Genus)) + 
+  geom_bar(stat = 'identity',colour='black') + scale_fill_manual(values=c(NAMED_GGPLOT_BAR_COLS)) +
+  facet_grid(.~ site, drop = TRUE, scale = 'free', space = 'free_x')+
+  scale_y_continuous(expand = expansion(mult = c(0, 0)))+
+  ylab('Relative Abundance')+
+  xlab('')+
+  labs(fill='16s Phytoplankton Taxonomy')+
+  theme(plot.margin=unit(c(0,.22,0,0.2,0), "cm"),axis.text=element_text(color='black',size=1),axis.text.x = element_text(angle=90,hjust=0.95,vjust=0.2,size = 10),
+        axis.text.y = element_text(size = 10),legend.position='right',strip.background =element_rect(fill=NA),strip.text = element_blank())
+
+# first panel of main community composition plot
+rel_abund_plot = ggplot(tax_plot_df, aes(x = (Sample_Name_Final), y = percent, fill = Genus, label = Genus)) + 
+  geom_bar(stat = 'identity',colour='black') + scale_fill_manual(values=c(NAMED_GGPLOT_BAR_COLS)) +
+  facet_grid(.~ site, drop = TRUE, scale = 'free', space = 'free_x',labeller = label_wrap_gen(width = 20))+
+  scale_y_continuous(expand = expansion(mult = c(0, 0)))+
+  ylab('Relative Abundance')+
+  xlab('')+
+  labs(fill='16s Phytoplankton Taxonomy')+
+  theme(plot.margin=unit(c(0.2,.22,0,0.2,0), "cm"),axis.text=element_text(color='black',size=1),axis.text.x = element_blank(),axis.ticks.x = element_blank(), panel.border = element_rect(color = "black", size = 3, fill = NA),
+        axis.text.y = element_text(size = 10),legend.position='none',strip.background =element_rect(fill='white'), strip.text = element_text(size = 15, vjust = 0))
+        
+rel_abund_plot
+
+# @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+# adding in Mixotrophy fig 
+# @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+
+# taxonomic groups and their mixotrophic status
+likely_auto = c("Thalassiosirales", "Chaetoceros", "Other Diatoms", "Rhizosolenia",
+                 "Attheya", "Fragilariopsis", "Chaetocerotales", "Thalassiosira",
+                 'Cylindrotheca','Coscinodiscophyceae','Rhizosolenia','Cymbellaceae','Cymatosiraceae')
+
+likely_mixo = c("Ochromonas", "Chrysochromulina","Pedinella","Pyramimonas",
+                 'Prymnesium','Teleaulax','Cymbomonas')
+
+maybe_mixo = c("Prymnesiales",'Geminigeraceae','Prymnesiophycidae','Imantonia','Florenciella','Micromonas')
+
+unknown = c('Eutreptiella','Ochrophyta','Unknown Eukaryota','Archaeplastida','<1%',"Phaeocystis")
+
+#creating mixotrophic status variables based on above vectors
+tax_plot_df$mixtrophy_status = ifelse(tax_plot_df$Genus %in% likely_auto,'Autotroph',
+  ifelse(tax_plot_df$Genus %in% likely_mixo,'Mixotroph',
+    ifelse(tax_plot_df$Genus %in% maybe_mixo,'Potential mixotroph','Unknown')))
+
+#group by mixotrophic status to recreate varplots groups for plotting
+tax_plot_df_mixo = tax_plot_df %>% ungroup() %>% 
+  group_by(SAMPLE_ID, mixtrophy_status) %>% 
+  dplyr::summarise(percent = sum(percent))
+
+# ad back in sample ID and sample names to mixotrophic plot 
+tax_plot_df_mixo = inner_join(tax_plot_df_mixo, (tax_plot_df %>% select(site, SAMPLE_ID, Sample_Name_Final) %>% dplyr::distinct()), by = 'SAMPLE_ID')
+
+#factor mixotrophy names for plotting
+tax_plot_df_mixo$mixtrophy_status = factor(tax_plot_df_mixo$mixtrophy_status, 
+                                           levels = c('Unknown','Autotroph','Potential mixotroph','Mixotroph'))
+
+col_vec = c("grey", "lightsalmon", "lightskyblue1", "lightskyblue3")
+
+#get some gneeral information on prevalence of mixtoprhy across sites
+tax_plot_df_mixo$site
+tax_plot_df_mixo%>% filter(site == 'Weak tidewater glacier influence') %>% 
+  group_by(mixtrophy_status) %>% 
+  dplyr::summarise(mean(percent))
+
+unique(tax_plot_df_mixo$site)
+tax_plot_df_mixo %>% filter(site == 'No tidewater glacier') %>% 
+  group_by(mixtrophy_status) %>% 
+  dplyr::summarise(mean(percent))
+
+tax_plot_df_mixo %>% filter(site == 'Strong tidewater glacier influence') %>% 
+  group_by(mixtrophy_status) %>% 
+  dplyr::summarise(mean(percent))
+
+tax_plot_df_mixo %>% filter(site == 'Strong tidewater glacier influence') %>% 
+  filter(grepl('Sverdrup', Sample_Name_Final)) %>% 
+  group_by(mixtrophy_status) %>% 
+  dplyr::summarise(mean(percent))
+
+
+tax_plot_df_mixo %>% filter(site %in% c('No tidewater glacier','Weak tidewater glacier influence')) %>% filter(mixtrophy_status %in% c('Mixotroph', 'Potential mixotroph')) %>% dplyr::summarise(sum_perc = sum(percent)) %>% ungroup() %>% dplyr::summarise(mean_perc = mean(sum_perc),med_perc = median(sum_perc))
+
+tax_plot_df_mixo %>% filter(grepl('Starnes2', Sample_Name_Final)) %>% filter(mixtrophy_status %in% c('Mixotroph', 'Potential mixotroph')) %>% dplyr::summarise(sum_perc = sum(percent)) %>% dplyr::summarise(mean_perc = mean(sum_perc),med_perc = median(sum_perc))
+
+tax_plot_df_mixo %>% filter(site %in% c('Strong tidewater glacier influence')) %>% filter(mixtrophy_status %in% c('Mixotroph', 'Potential mixotroph')) %>% dplyr::summarise(sum_perc = sum(percent)) %>% ungroup() %>% dplyr::summarise(mean_perc = mean(sum_perc),med_perc = median(sum_perc))
+
+tax_plot_df_mixo %>% filter(site %in% c('Strong tidewater glacier influence')) %>% filter(mixtrophy_status %in% c('Mixotroph', 'Potential mixotroph')) %>% dplyr::summarise(sum_perc = sum(percent)) %>% ggplot(aes(x = sum_perc)) + geom_density()
+
+mixotrophy_plot = ggplot(tax_plot_df_mixo, aes(x = (Sample_Name_Final), y = percent, fill = mixtrophy_status)) + # make plot
+  geom_bar(stat = 'identity',colour='black') + scale_fill_manual(values=c(col_vec)) +
+  facet_grid(.~ site, drop = TRUE, scale = 'free', space = 'free_x')+
+  #scale_y_discrete(expand=c(0,0))+
+  scale_y_continuous(expand = expansion(mult = c(0, 0)))+
+  ylab('Relative Abundance')+
+  xlab('')+
+  labs(fill='Mixotrophic Status')+
+  #geom_text(size = 3, position = position_stack(vjust = 0.5)) +
+  theme(axis.text=element_text(color='black',size=1),axis.text.x = element_text(angle=90,hjust=0.95,vjust=0.2,size = 10),
+        axis.text.y = element_text(size = 10),legend.position='right',strip.background =element_rect(fill=NA),strip.text = element_blank()) +
+  theme(legend.text=element_text(size=12), 
+        legend.title=element_text(size=14), 
+        legend.key.size=unit(1.2, "lines")) + 
+  theme(axis.text.x = element_blank(), legend.position = 'none',panel.border = element_rect(color = "black", size = 3, fill = NA))
+mixotrophy_plot
+
+
+mixotrophy_plot = mixotrophy_plot + theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 10))
+
+gridder = cowplot::plot_grid(rel_abund_plot,mixotrophy_plot, nrow = 2, rel_heights = c(1, .5))
+
+# @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+# adding in Chaetoceros fig 
+# @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+
+tax_plot_df_chaet = get_transformed_ASV_table(ASVs = T)
+
+tax_plot_df_chaet$Genus
+
+tax_plot_df_chaet = format_sample_names(tax_plot_df_chaet)
+
+#change chaetoceros ASVs that are visible to colours and leave the rest grey
+cheat_colors = ifelse(grepl('Chaetoceros|Thalassiosirales', levels(tax_plot_df_chaet$Genus)), 'grey', '')
+names(cheat_colors) = levels(tax_plot_df_chaet$Genus)
+
+cheat_colors = cheat_colors[-c(1,2)]
+
+colors_list1 <- c("#6495ED", "#1E9099", "#4169E1", "#0000FF", "#800080", "#8A2BE2", "#9370DB", "#6A5ACD")
+colors_list2 <- c("#8B0000", "#FF7F80", "#FF4500", "#FF6347", "#FFDFFF", "#FF0000", "#FFA07A", "#FFA500", "#FF8C00", "#FFD700")
+
+cheat_colors[c('Chaetoceros_ASV1','Chaetoceros_ASV2','Chaetoceros_ASV3','Chaetoceros_ASV4','Chaetoceros_ASV5','Chaetoceros_ASV6','Chaetoceros_ASV7','Chaetoceros_ASV8','Chaetoceros_ASV9','Chaetoceros_ASV10')] =  colors_list2
+
+cheat_colors[c('Thalassiosirales_ASV1','Thalassiosirales_ASV2','Thalassiosirales_ASV3','Thalassiosirales_ASV4','Thalassiosirales_ASV5','Thalassiosirales_ASV6','Thalassiosirales_ASV7','Thalassiosirales_ASV8')] = colors_list1
+
+cheat_colors= cheat_colors[!cheat_colors == '']
+cheat_colors = cheat_colors[2:length(cheat_colors)]
+
+tax_plot_df_chae_only = tax_plot_df_chaet[grepl('Chaetoceros_|Thalassiosirales_',tax_plot_df_chaet$Genus,ignore.case = T),]
+
+tax_plot_df_chae_only$site = factor((LAND_TYPE_NAMES[tax_plot_df_chae_only$landtype]), levels = c( 'No tidewater glacier', 'Weak tidewater glacier influence','Strong tidewater glacier influence'))
+
+chea_supp = ggplot(tax_plot_df_chae_only, aes(x = (Sample_Name_Final), y = percent, fill = Genus, label = Genus)) + # make plot
+  geom_bar(stat = 'identity',colour='black', size = 0.5) + scale_fill_manual(values=c(cheat_colors), guide = guide_legend(ncol = 6)) +
+  facet_grid(.~ site, drop = TRUE, scale = 'free', space = 'free_x',labeller = label_wrap_gen(width = 20))+
+  ylab('Relative Abundance')+
+  xlab('')+
+  labs(fill='Chaetoceros ASV')+
+  scale_y_continuous(limits = c(0,100),expand = expansion(mult = c(0, 0)))+
+  theme(plot.margin=unit(c(.22,.22,.22,0.2,.22), "cm"),legend.position = 'bottom',axis.text=element_text(color='black',size=1),axis.text.x = element_text(angle=90,hjust=0.95,vjust=0.2,size = 10),
+        axis.text.y = element_text(size = 15),panel.border = element_rect(color = "black", fill = NA, size = 4), panel.background = element_rect(fill = 'white'), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), strip.background =element_rect(fill='white'), strip.text = element_text(size = 15, vjust = 0),legend.text=element_text(size=13),legend.title=element_blank())
+chea_supp
+
+file_extension = 'png'
+ggsave(paste0(PLOT_DIR,'chaetoceros_supp_',CURRENT_DATE,'.',file_extension),chea_supp, 
+       device = file_extension, width = 6000, height = 4000, units = 'px')  
+
+chae_main_plot = ggplot(tax_plot_df_chae_only, aes(x = (Sample_Name_Final), y = percent, fill = Genus, label = Genus)) + # make plot
+  geom_bar(stat = 'identity',colour='black', size = 0.5) + scale_fill_manual(values=c(cheat_colors,(rainbow(6)))) +
+  facet_grid(.~ site, drop = TRUE, scale = 'free', space = 'free_x')+
+  scale_y_continuous(expand = expansion(mult = c(0, 0)))+
+  ylab('')+
+  xlab('')+
+  labs(fill='Chaetoceros ASV')+
+  theme_minimal() + 
+  theme(plot.margin=unit(c(0,.22,0,.4), "cm"),legend.position = 'none',axis.text=element_text(color='black',size=1),axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 10),strip.background =element_rect(fill=NA),strip.text = element_blank(),
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+chae_main_plot
+
+gridder = cowplot::plot_grid(rel_abund_plot,chae_main_plot,mixotrophy_plot, nrow = 3, rel_heights = c(1,.15,.5))
+gridder
+
+file_extension = 'pdf'
+ggsave(paste0(PLOT_DIR,'big_tax_bar_plot_fig_3_',CURRENT_DATE,'.',file_extension),gridder, 
+       device = file_extension, width = 4500, height = 4000, units = 'px')  
+
+############################################################
+##### supplemental species plot ####################
+############################################################
+
+tax_plot_df_spec = get_transformed_ASV_table(spec = T)
+
+unique(tax_plot_df_spec$Species)
+unique(tax_plot_df_spec$`sum(percent)`)
+
+tax_plot_df_spec = format_sample_names(tax_plot_df_spec)
+
+specs_colours = c('lightsalmon2', 'lightgoldenrod3', 'lightcyan3', 'darkgreen', 'palevioletred4', 'green', 'lightskyblue4', 'darkslateblue', 'deeppink', 'navy', 'seashell3', 'tomato2', 'olivedrab2', 'magenta3', 'dodgerblue4', 'orange1', 'hotpink4', 'peachpuff1', 'dodgerblue2', 'darkred', 'red', 'mediumspringgreen', 'yellow4', 'lemonchiffon4', 'ivory2', 'salmon2', 'lightgoldenrod2', 'yellow', 'darkseagreen2', 'azure', 'purple1', 'honeydew4', 'black', 'skyblue1', 'darkturquoise', 'orangered', 'bisque4', 'thistle1')
+
+tax_plot_df_spec$site = factor((LAND_TYPE_NAMES[tax_plot_df_spec$landtype]), levels = c( 'No tidewater glacier', 'Weak tidewater glacier influence','Strong tidewater glacier influence'))
+
+species_supp = ggplot(tax_plot_df_spec, aes(x = (Sample_Name_Final), y = `sum(percent)`, fill = Species, label = Species)) + # make plot
+  geom_bar(stat = 'identity',colour='black', size = 0.5) + scale_fill_manual(values=c(specs_colours), guide = guide_legend(ncol = 2)) +
+  facet_grid(.~ site, drop = TRUE, scale = 'free', space = 'free_x',labeller = label_wrap_gen(width = 20))+
+  scale_y_continuous(expand = expansion(mult = c(0, 0)))+
+  ylab('Relative Abundance')+
+  xlab('')+
+  labs(fill='Chaetoceros ASV')+
+  theme(plot.margin=unit(c(.22,.22,.22,0.2,.22), "cm"),legend.position = 'bottom',axis.text=element_text(color='black',size=1),axis.text.x = element_text(angle=90,hjust=0.95,vjust=0.2,size = 10),
+        axis.text.y = element_text(size = 15),panel.border = element_rect(color = "black", fill = NA, size = 4), panel.background = element_rect(fill = 'white'), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), strip.background =element_rect(fill='white'), strip.text = element_text(size = 15, vjust = 0),legend.text=element_text(size=10),legend.title=element_blank()) 
+species_supp
+
+ggsave(paste0(PLOT_DIR,'supp_species_',CURRENT_DATE,'.',file_extension),species_supp, 
+       device = file_extension, width = 6000, height = 4000, units = 'px')  
+```
+
+## NMDS plot
+```{r NMDS figure}
+
+#transpose ASV table, see transpose_func in functions file for documentation
+asvs_table = transpose_func(ASV_table)
+
+#hellinger transform data
+helASV = decostand(asvs_table, 'hellinger')
+#create nmds dataframe, see metaNMDS_bray_and_df in functions file for documentation
+NMDS_hel = metaNMDS_bray_and_df(helASV, c(1,2), meta = meta_16s)
+#stress = 0.1538335
+
+#create NMDS plot
+nmds_plot = ggplot(data=NMDS_hel,aes(x = x,y = y, label = SAMPLE_ID, fill = Glacier_Name,shape = SURF_SCM))+
+  geom_point(size=15, alpha = .8, color = 'black') + 
+  stat_ellipse(data=NMDS_hel %>% filter(landtype != 'land'), aes(color = landtype, group = landtype), level = 0.8, size = 1.5, alpha = 0.5) +
+  scale_fill_manual(values=GLACIATION_COLORS) +
+  scale_color_manual(values=c(GLACIATION_COLORS)) +
+  scale_shape_manual(values=c(21,23)) +
+  xlab('NMDS1') +
+  ylab('NMDS2') +
+  theme_bw() + 
+  theme(panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.position = 'none')+my_text_theme()
+nmds_plot
+
+#saving plot as png
+file_extension = 'png'
+ggsave(paste0(PLOT_DIR,'nmds_fig_3_',CURRENT_DATE,'.',file_extension),nmds_plot, 
+       device = file_extension, width = 3000, height = 3000, units = 'px')  
+
+meta_16s$landtype
+helASV_filt =  helASV[rownames(helASV) %in% (meta_16s[meta_16s$landtype %in% c('strongTWG','weakTWG'),]$SAMPLE_ID),]
+
+## perform anosim on only weak vs strong
+bray_asv = vegdist(helASV_filt, method = 'bray')
+names(bray_asv)
+
+landtype_df = left_join(base::data.frame(SAMPLE_ID = names(bray_asv)), 
+          meta_16s %>% select(landtype, SAMPLE_ID))
+
+anosim(bray_asv, grouping = landtype_df$landtype)
+```
+
+
+## PCA plot
+```{r PCA Figure 2}
+#This chunk generates an PCA plot and saves it as a PDF file
+
+#vectors of columns to be used from the metadata in the PCA
+vars_all = c('SAMPLE_ID','Temperature', 'Salinity','Turbidity', 'Chlorophyl a','N2', 'Dissolved O2','SiO4','PO4','NO3','NH3')
+
+#see select_vars in functions file for documentation
+numerical_pca_data = select_vars(meta_16s, vars_all, filter_by_50m = T, na_o = T)
+
+#see make_pca_plot in functions file for documentation
+p1 = make_pca_plot(pca_meta = numerical_pca_data,
+                   full_meta = meta_16s, 
+                   scl = T, 
+                   vectors = vars_all)
+p1
+#saving plot as pdf to be manipulated in Inkscape 
+file_extension = 'pdf'
+ggsave(paste0(PLOT_DIR,'',CURRENT_DATE,'no_elipses_presensation.',file_extension),p1, 
+       device = file_extension, width = 3600, height = 3600, units = 'px')  
+
+```
+
+##Main and supp Rubisco plot
+```{r Rubisco plot: Figure 5}
+#read in CTD chlorophyll a tracer data
+chla_tracers = read.csv('/Users/patrickwhite/Documents/GitHub/CAA_TWG_2024/CAA_TWG_2024_BL/CAA_PPCC_2024/chla_tracer_data_rubisco_CAA_PPCC.csv')
+
+#read in rubisco and assocaited metadata
+Rubisco_data = read.csv('/Users/patrickwhite/Documents/GitHub/CAA_TWG_2024/CAA_TWG_2024_BL/CAA_PPCC_2024/Rubisco_data_meta_CAA_PPCC_06052024.csv')
+
+#check basic statistics for pmol of diatom Rubisco
+Rubisco_data %>% filter(grepl('FL',Modified.Sequence)) %>% select(pmol.L) %>% summary()
+
+# remove broad peptide for plotting
+Rubisco_data %<>% filter(peptide_names != 'Broad')
+
+# factor taxa for plot
+Rubisco_data$peptide_names = factor(Rubisco_data$peptide_names, levels = c('Thalassiosirales', 'Chaetoceros','Micromonas','Phaeocystis', 'Fragilariopsis/Pseudo-nitzschia'))
+
+asv_tab = get_transformed_ASV_table()
+p1 = plot_panel_1_Rubisco_tax(asv_tab, Rubisco_data, legend_position = 'none', filter_group = 'SV1')
+p2 = plot_panel_1_Rubisco_tax(asv_tab, Rubisco_data, legend_position = 'none', filter_group = 'SV7')
+p3 = plot_panel_1_Rubisco_tax(asv_tab, Rubisco_data, legend_position = 'none', filter_group = 'BL1')
+p4 = plot_panel_1_Rubisco_tax(asv_tab, Rubisco_data, legend_position = 'none', filter_group = 'BL9')
+p5 = plot_panel_1_Rubisco_tax(asv_tab, Rubisco_data, legend_position = 'none', filter_group = 'TA7')
+
+panel1 = plot_grid(p1,p2,p3,p4,p5, nrow = 1, ncol = 5)
+panel1
+
+#get carbon fixation values for scale - see Roberts et al. 2024 for calculations and justification
+Rubisco_data$carb_fix = (Rubisco_data$pmol.L*1000)*(10^-15)*0.4*12.011*1000*86400*1000
+panel2 = plot_panel_2_Rubisco_2(Rubisco_data, chla_tracers)
+panel2
+
+
+#combine panles into one large plot with scaled sizes
+full_Rubisco_plot = plot_grid(panel1, panel2, nrow = 2, ncol = 1, rel_heights = c(.9, 1))
+
+#saving plot as pdf to be manipulated in Inkscape 
+file_extension = 'pdf'
+ggsave(paste0(PLOT_DIR,'Rubisco_fig_all_nuts_',CURRENT_DATE,'.',file_extension),full_Rubisco_plot, 
+       device = file_extension, width = 4000, height = 4000, units = 'px')  
+
+#creating dataframe for the supplemental rubisco plot.
+Rubisco_data2 = Rubisco_data %>% filter(grepl('SV',Sample.name)) %>% 
+  filter(grepl('FL',Modified.Sequence)) %>% 
+  group_by(Sample.name, Modified.Sequence) %>% 
+  dplyr::summarise(pmol.L = mean(pmol.L)) %>% 
+  ungroup() %>% 
+  left_join(. , (Rubisco_data %>%  select(Sample.name, Fe56.MR.,Cd111.LR., Mn55.MR., SiO4, PO4,NO3, Glacier_Name) %>% distinct()), by = 'Sample.name') %>% 
+  bind_rows(., (Rubisco_data %>%  select(Sample.name,Modified.Sequence, Fe56.MR.,Cd111.LR., Mn55.MR., SiO4, PO4,NO3, Glacier_Name, pmol.L) %>% 
+                  filter(!grepl('SV',Sample.name)) %>% 
+                  filter(grepl('FL',Modified.Sequence)))) %>% 
+  group_by(Sample.name) %>% 
+  dplyr::summarise(mean_pmol_conc = sum(pmol.L, na.rm=T)) %>% 
+  ungroup() %>% 
+  left_join(., 
+            Rubisco_data %>% select(Sample.name, Fe56.MR.,Cd111.LR., Mn55.MR., SiO4, PO4,NO3, Glacier_Name) %>% 
+              distinct())
+
+# plotting nutrients and diatom relationships and calculating pearson correlations
+s1 = ggplot(Rubisco_data2 ,aes( y = mean_pmol_conc, x = as.numeric(NO3)))+
+  geom_smooth(method='lm', level = 0, color = 'black', linetype = 'dashed') +
+  geom_point(aes(fill = Glacier_Name), size = 12,shape = 21, color = 'black') +
+  scale_fill_manual(values = GLACIATION_COLORS)+
+  theme_bw() + xlab('Nitrate (µM)')+
+  ylab('Sum of all diatom specific Rubisco peptides (pM)') + 
+  my_text_theme(axis_and_tick_size = 20) + 
+  theme(legend.position = 'none')
+s1
+
+#0.6567277 r
+#0.03913 p-value
+#for sum
+#0.03825 p
+#0.6589151 r
+
+#for sum after fixing code and adding correct bca Rubiscos
+#0.1327 p
+#0.5092792 r
+
+res <- cor.test(Rubisco_data2$mean_pmol_conc, Rubisco_data2$NO3, 
+                method = "pearson")
+
+s2 = ggplot(Rubisco_data2 ,aes( y = mean_pmol_conc, x = as.numeric(SiO4)))+
+  geom_smooth(method='lm', level = 0, color = 'black', linetype = 'dashed') +
+  geom_point(aes(fill = Glacier_Name), size = 12,shape = 21, color = 'black') +
+  scale_fill_manual(values = GLACIATION_COLORS)+
+  theme_bw() + xlab('Silicate (µM)')+
+  ylab('Sum of all diatom specific Rubisco peptides (pM)') + 
+  my_text_theme(axis_and_tick_size = 20) + 
+  theme(legend.position = 'none')
+s2
+
+#for mean
+#0.9088395 r
+#0.0006882 p-value
+#for sum
+#0.899 r 
+#0.0009 p
+
+#for sum after fixing code and adding correct bca Rubiscos
+#0.004325 p
+#0.8428919 r
+res <- cor.test(Rubisco_data2$mean_pmol_conc, Rubisco_data2$SiO4, 
+                method = "pearson")
+
+#so while concentration is higher and better correlatwed with siO4 - we know taht there is probs
+#more drawdown of NO3 than SiO4 beacuse drawdown of SiO4 increases linearly, but NO3 increases expo
+#at least i remember reading this in one of my papers - should note this 
+
+s3 = ggplot(Rubisco_data2 ,aes( y = mean_pmol_conc, x = as.numeric(PO4)))+
+  geom_smooth(method='lm', level = 0, color = 'black', linetype = 'dashed') +
+  geom_point(aes(fill = Glacier_Name), size = 12,shape = 21, color = 'black') +
+  scale_fill_manual(values = GLACIATION_COLORS)+
+  theme_bw() + xlab('Phosphate (µM)')+
+  ylab('Sum of all diatom specific Rubisco peptides (pM)') + 
+  my_text_theme(axis_and_tick_size = 20) + 
+  theme(legend.position = 'none')
+s3
+
+#for mean
+#0.7846413 r
+#0.00719 p-value
+
+#for sum
+#0.006339 p
+#0.7918073 r
+
+#for sum after fixing code and adding correct bca Rubiscos
+#0.03732 p
+#0.6612918 r
+res <- cor.test(Rubisco_data2$mean_pmol_conc, Rubisco_data2$PO4, 
+                method = "pearson")
+
+s4 = ggplot(Rubisco_data2 ,aes( y = mean_pmol_conc, x = as.numeric(Fe56.MR.)))+
+  geom_smooth(method='lm', level = 0, color = 'black', linetype = 'dashed') +
+  geom_point(aes(fill = Glacier_Name), size = 12,shape = 21, color = 'black') +
+  scale_fill_manual(values = GLACIATION_COLORS)+
+  theme_bw() + xlab('Iron (nM)')+
+  ylab('Sum of all diatom specific Rubisco peptides (pM)') + 
+  my_text_theme(axis_and_tick_size = 20) + 
+  theme(legend.position = 'none')
+s4
+
+#for mean
+#0. -0.4157404 r
+#0.3536 p-value
+#for sum
+# 0.4131272 r
+# p = 0.3569
+
+#for sum after fixing code and adding correct bca Rubiscos
+#-0.3184858 p
+#0.4863 r
+res <- cor.test(Rubisco_data2$mean_pmol_conc, Rubisco_data2$Fe56.MR., 
+                method = "pearson")
+res
+
+s5 = ggplot(Rubisco_data2 ,aes( y = mean_pmol_conc, x = as.numeric(Mn55.MR.)))+
+  geom_smooth(method='lm', level = 0, color = 'black', linetype = 'dashed') +
+  geom_point(aes(fill = Glacier_Name), size = 12,shape = 21, color = 'black') +
+  scale_fill_manual(values = GLACIATION_COLORS)+
+  theme_bw() + xlab('Manganese (nM)')+
+  ylab('Sum of all diatom specific Rubisco peptides (pM)') + 
+  my_text_theme(axis_and_tick_size = 20) + 
+  theme(legend.position = 'none')
+s5
+
+#for mean
+#0.2436814 r
+#0.5985 p-value
+#for sum
+# 0.2342725 r
+# 0.6131
+
+#for sum after fixing code and adding correct bca Rubiscos
+#0.5118 p
+#0.3010254 r
+res <- cor.test(Rubisco_data2$mean_pmol_conc, Rubisco_data2$Mn55.MR., 
+                method = "pearson")
+res
+
+s6 = ggplot(Rubisco_data2 ,aes( y = mean_pmol_conc, x = as.numeric(Cd111.LR.)))+
+  geom_smooth(method='lm', level = 0, color = 'black', linetype = 'dashed') +
+  geom_point(aes(fill = Glacier_Name), size = 12,shape = 21, color = 'black') +
+  scale_fill_manual(values = GLACIATION_COLORS)+
+  theme_bw() + xlab('Cadmium (nM)')+
+  ylab('Sum of all diatom specific Rubisco peptides (pM)') + 
+  my_text_theme(axis_and_tick_size = 20) + 
+  theme(legend.position = 'none')
+s6
+
+#for mean
+#0.7964014 r
+#0.03208 p-value
+#for sum
+#0.8011613
+#0.03033
+
+#for sum after fixing code and adding correct bca Rubiscos
+#0.09487 p
+#0.6769151 r
+res <- cor.test(Rubisco_data2$mean_pmol_conc, Rubisco_data2$Cd111.LR., 
+                method = "pearson")
+res
+
+gridder = grid.arrange(s1,s2,s3,s4,s5,s6, ncol = 3, nrow = 2)
+
+width_dim = 6000
+height_dim = 4000
+file_extension = 'png'
+ggsave(paste0(PLOT_DIR,'Rubisco_diam_correlation_nuts_tms_',CURRENT_DATE,'.',file_extension),gridder, 
+       device = file_extension, width = 6000, height = 4000, units = 'px')  
+
+```
+
+## Supp boxplot
+```{r}
+
+# Define the variables to be used for analysis
+vars_all = c('SAMPLE_ID','landtype','Temperature', 'Salinity','Turbidity', 'Chlorophyl a','N2', 'Dissolved O2','SiO4','PO4','NO3','NH3')
+
+# Select relevant columns from meta_16s then pivot the data from wide to long format
+long = meta_16s %>%
+  select(vars_all, Glacier_Name) %>%
+  select(-SAMPLE_ID) %>%
+  pivot_longer(cols = Temperature:NH3) 
+
+# Filter the meta data for the 'Sverdrup' glacier
+sv_meta = meta_16s %>%
+  filter(Glacier_Name == 'Sverdrup')
+
+# Calculate the ratio of mean NO3 + NH3 + NO2 to mean PO4 in Sverdrup glacier
+mean(sv_meta$NO3 + sv_meta$NH3 + sv_meta$NO2, na.rm = T) / mean(sv_meta$PO4, na.rm = T)
+
+# Calculate the ratio of mean SiO4 to mean PO4 in Sverdrup glacier
+mean(sv_meta$SiO4, na.rm = T) / mean(sv_meta$PO4, na.rm = T)
+
+# Convert Glacier_Name to a factor with custom color levels
+long$Glacier_Name = factor(long$Glacier_Name, levels = names(GLACIATION_COLORS))
+
+# Rename variables for better readability
+name_change = c('Dissolved O2' = 'Dissolved oxygen',
+  'NO3' = 'Nitrate',
+  'SiO4' = 'Silicate',
+  'NH3' ='Ammonia',
+  'PO4' = 'Phosphate',
+  'Salinity' = 'Salinity',
+  'Turbidity' = 'Turbidity',
+  'Temperature' = 'Temperature',
+  'Chlorophyl a' = 'Chlorophyll a',
+  'N2' = 'N2')
+long$name = unname(name_change[long$name])
+
+# Convert 'name' to a factor with predefined levels
+long$name = factor(long$name, levels = c('Temperature', 'Salinity','Turbidity', 'N2', 'Dissolved oxygen','Chlorophyll a','Silicate','Phosphate','Nitrate','Ammonia'))
+
+# Create a boxplot using ggplot
+bp = ggplot(long, aes(y = value, x = Glacier_Name, fill = Glacier_Name)) +
+  geom_boxplot() +
+  facet_wrap(~name, scales = 'free_y', ncol = 3) +
+  geom_point(shape = 21, fill = 'black', color = 'white') +
+  ylab('') +
+  xlab('') +
+  scale_fill_manual(values = GLACIATION_COLORS) +
+  theme(
+    plot.margin = unit(c(.22,.22,.22,0.2,.22), "cm"),
+    legend.position = 'none',
+    axis.text = element_text(color = 'black', size = 1),
+    axis.text.x = element_text(angle = 90, hjust = 0.95, vjust = 0.2, size = 10),
+    axis.text.y = element_text(size = 15),
+    panel.border = element_rect(color = "black", fill = NA, size = 4),
+    panel.background = element_rect(fill = 'white'),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    strip.background = element_rect(fill = 'white'),
+    strip.text = element_text(size = 15, vjust = 0),
+    legend.text = element_text(size = 13),
+    legend.title = element_blank()
+  )
+bp
+
+# Save the boxplot as a PNG file
+file_extension = 'png'
+ggsave(paste0(PLOT_DIR,'box_plot_chem_phys_Supp_',CURRENT_DATE,file_extension), bp, 
+       device = file_extension, width = 3600, height = 3600, units = 'px')  
+```
