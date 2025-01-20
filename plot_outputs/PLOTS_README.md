@@ -1,1 +1,0 @@
-These plot files represent the initial plots created during analysis and require further post processing to be the finalized figures found in the manuscript. 

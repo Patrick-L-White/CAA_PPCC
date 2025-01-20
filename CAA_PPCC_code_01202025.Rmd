@@ -1,6 +1,6 @@
 ---
 title: "Code for CAA_PPCC figures and analysis"
-date: "08-05-2024"
+date: "04-23-2024"
 author: "Patrick L. White"
 editor_options: 
   chunk_output_type: console
@@ -8,24 +8,19 @@ editor_options:
 
 ## Libraries
 ```{r}
-library(readr) 
 library(plyr)
 library(tidyverse)
 library(ggplot2)
 library(dplyr)
 library(vegan)
 library(magrittr)
-library(ecodist)
 library(data.table)
-library(factoextra)
 library(ape)
-library(randomForest)
 library(gridExtra)
 library(ggpubr)
-library(labdsv)
-library(stringi)
 library(cowplot)
 library(ggOceanMaps)
+library(ggsignif)
 ```
 
 ## Custom functions
@@ -210,7 +205,7 @@ plot_panel_1_Rubisco_tax = function(asvtable, meta, filter_group, legend_positio
                        'Chaetoceros' = 'cornsilk2',
                        'Micromonas' = 'darkseagreen3',
                        'Phaeocystis' = 'pink3',
-                       'Fragilariopsis/Pseudo-nitzschia'= 'cornsilk4',NAMED_GGPLOT_BAR_COLS)
+                       'Fragilariopsis/Pseudo-nitzschia'= 'dodgerblue2',NAMED_GGPLOT_BAR_COLS)
   
   #factoring taxanomy for orderingon the plot
   bound_df$Genus = factor(bound_df$Genus, levels = rev(c('Thalassiosirales','Thalassiosira','Attheya','Chaetocerotales','Chaetoceros','Coscinodiscophyceae','Rhizosolenia','Cylindrotheca','Fragilariopsis','Cymbellaceae','Cymatosiraceae','Other Diatoms','Cymbomonas','Micromonas','Pyramimonas','Ochromonas','Phaeocystis','Prymnesiophycidae','Prymnesiales','Chrysochromulina','Imantonia','Prymnesium','Pedinella','Florenciella','Eutreptiella','Geminigeraceae','Teleaulax','Archaeplastida','Ochrophyta','Unknown Eukaryota','<1%','Saccharina','Phaeophyceae','Fragilariopsis/Pseudo-nitzschia')))
@@ -269,7 +264,7 @@ plot_panel_2_Rubisco_2 = function(Rubisco_meta, ctd_data){
                        'Chaetoceros' = 'cornsilk2',
                        'Micromonas' = 'darkseagreen3',
                        'Phaeocystis' = 'pink3',
-                       'Fragilariopsis/Pseudo-nitzschia' = 'cornsilk4')
+                       'Fragilariopsis/Pseudo-nitzschia' = 'dodgerblue2')
   
   # Select and adjust column names for chlorophyll tracer vector
   chlorophyll_tracer_df = ctd_data %>% 
@@ -314,9 +309,9 @@ format_sample_names = function(df){
   df = df %>% dplyr::mutate(site = case_when(grepl('Talbot.|Belcher.|Sverdrup.|Sydkap.', Sample_Name_Final) ~ 'Strong tidewater glacier influence',
                                              grepl('Starnes1.|Jakeman.|Starnes2.', Sample_Name_Final) ~ 'Weak tidewater glacier influence',
                                              grepl('JonesSound.|NaresStrait.', Sample_Name_Final) ~ 'Open Water',
-                                             TRUE ~ 'No tidewater glacier Influence'))
+                                             TRUE ~ 'No tidewater glacier influence'))
   
-  df$site = factor(df$site, levels = c('Open Water','No tidewater glacier Influence','Weak tidewater glacier influence','Strong tidewater glacier influence'))
+  df$site = factor(df$site, levels = c('Open Water','No tidewater glacier influence','Weak tidewater glacier influence','Strong tidewater glacier influence'))
   
   site_fac = c('GriseFiord.27_20', 'GriseFiord.27_5', 'GriseFiord.28_5',
                'Harbour.39_5', 'Harbour.40_20', 'Harbour.40_5',
@@ -435,8 +430,8 @@ make_pca_plot = function(pca_meta, full_meta, scl, vectors){
     geom_text(data = vecs_df, aes(x = PC1*3, y = PC2*3, label = Variables),
               size = 10) +
     guides(fill=guide_legend(override.aes=list(shape=21))) + 
-    xlab((names(pca_plot)[1])) +
-    ylab((names(pca_plot)[2])) +
+    xlab(paste0(names(pca_plot)[1], ' (', as.character(round(prop_explained[1], digits = 2)*100), '%)')) +
+    ylab(paste0(names(pca_plot)[2], ' (', as.character(round(prop_explained[2], digits = 2)*100), '%)')) +
     theme_bw() + 
     theme(
       panel.grid.major = element_blank(),
@@ -628,45 +623,79 @@ my_text_theme = function(axis_and_tick_size = 25) {
 CURRENT_DATE = Sys.Date() # date for saving plot files
 
 # directory for where to save plots
-PLOT_DIR = '/Users/patrickwhite/Documents/GitHub/CAA_TWG_2024/CAA_TWG_2024_BL/CAA_PPCC_2024/plot_outputs/' 
+PLOT_DIR = '/Users/patrickwhite/Documents/GitHub/CAA_PPCC/plot_outputs/' 
 
-# barplot colors 
-GGPLOT_BAR_COLS = c('darkcyan','thistle3','darkorange2','#F39B7FB2','cornsilk2','tan1','ivory1','lightsteelblue3','thistle2','mediumaquamarine','palevioletred4','indianred3','darkseagreen3','plum','darkblue','cornsilk4','pink3','moccasin','blue1','gold1','cyan1','tomato2','tomato3','palevioletred1','salmon2','mediumorchid4','palegreen','yellow3','darkorange4','orange3','wheat', 'green','tan') 
 
-# named barplot colors with taxonomic groups
-NAMED_GGPLOT_BAR_COLS = c(
-  'Thalassiosirales' = 'darkcyan' ,
-  'Thalassiosira' = 'thistle3' ,
-  'Attheya' = 'darkorange2' ,
-  'Chaetocerotales' = '#F39B7FB2' ,
-  'Chaetoceros' = 'cornsilk2' ,
-  'Other Diatoms' = 'tan1' ,
-  'Eutreptiella' = 'ivory1' ,
-  'Ochromonas' = 'lightsteelblue3' ,
-  'Pedinella' = 'thistle2' ,
-  'Chrysochromulina' = 'mediumaquamarine' ,
-  'Cymbomonas' = 'palevioletred4' ,
-  'Coscinodiscophyceae' = 'indianred3' ,
-  'Micromonas' = 'darkseagreen3' ,
-  'Rhizosolenia' = 'plum' ,
-  'Ochrophyta' = 'darkblue' ,
-  'Fragilariopsis' = 'cornsilk4' ,
-  'Phaeocystis' = 'pink3' ,
-  'Pyramimonas' = 'tan' ,
-  'Prymnesiales' = 'blue1' ,
-  'Imantonia' = 'gold1' ,
-  'Cylindrotheca' = 'cyan1' ,
-  'Geminigeraceae' = 'tomato2' ,
-  'Teleaulax' = 'tomato3' ,
-  'Prymnesiophycidae' = 'palevioletred1' ,
-  'Prymnesium' = 'salmon2' ,
-  'Florenciella' = 'mediumorchid4' ,
-  'Unknown Eukaryota' = 'palegreen' ,
-  'Cymbellaceae' = 'yellow3' ,
-  'Cymatosiraceae' = 'darkorange4' ,
-  'Archaeplastida' = 'orange3' ,
-  '<1%' = 'wheat'
+NAMES_VECTOR = c(
+  'Thalassiosirales',
+  'Thalassiosira',
+  'Attheya',
+  'Chaetocerotales',
+  'Chaetoceros',
+  'Coscinodiscophyceae',
+  'Rhizosolenia',
+  'Cylindrotheca',
+  'Fragilariopsis',
+  'Cymbellaceae',
+  'Cymatosiraceae',
+  'Other Diatoms',
+  'Cymbomonas',
+  'Micromonas',
+  'Pyramimonas',
+  'Ochromonas',
+  'Phaeocystis',
+  'Prymnesiophycidae',
+  'Prymnesiales',
+  'Chrysochromulina',
+  'Imantonia',
+  'Prymnesium',
+  'Pedinella',
+  'Florenciella',
+  'Eutreptiella',
+  'Geminigeraceae',
+  'Teleaulax',
+  'Archaeplastida',
+  'Ochrophyta',
+  'Unknown Eukaryota',
+  '<1%'
 )
+
+COLORS_VECTOR = c(
+  'darkcyan',
+  'thistle3',
+  'darkorange2',
+  '#F39B7FB2',
+  'cornsilk2',
+  'dodgerblue2',
+  'plum',
+  'cyan1',
+  'red',
+  'yellow3',
+  'peru',
+  'tan1',
+  'palevioletred4',
+  'darkseagreen3',
+  'green2',
+  'lightsteelblue3',
+  'pink3',
+  'palevioletred1',
+  'blue1',
+  'mediumaquamarine',
+  'gold1',
+  'salmon2',
+  'thistle2',
+  'mediumorchid4',
+  'ivory1',
+  'tomato2',
+  'purple',
+  'orange3',
+  'darkblue',
+  'palegreen',
+  'darkgrey'
+)
+
+names(COLORS_VECTOR) = NAMES_VECTOR
+NAMED_GGPLOT_BAR_COLS = COLORS_VECTOR
 
 #color for sites
 GLACIATION_COLORS = c('Grise Fiord'="#FDB777",
@@ -682,6 +711,19 @@ GLACIATION_COLORS = c('Grise Fiord'="#FDB777",
                                   'weakTWG' = "#71C7EC",
                                   'land' = "#FDB777")
 
+POINT_COLORS = c('Grise Fiord'="black",
+                                  'Harbour'="black",
+                                  'Starnes.2'="black",
+                                  'Starnes.1'="black",
+                                  'Jakeman'="black",
+                                  'Sverdrup'="black",
+                                  'Sydkap'="black",
+                                  'Belcher'="black",
+                                  'Talbot Inlet'='white',
+                                  'strongTWG' = "#6A51A3",
+                                  'weakTWG' = "#71C7EC",
+                                  'land' = "#FDB777")
+
 ```
 
 
@@ -690,12 +732,12 @@ GLACIATION_COLORS = c('Grise Fiord'="#FDB777",
 set.seed(1234)
 
 #read in ASV table
-ASV_table = read.csv('/Users/patrickwhite/Documents/GitHub/CAA_TWG_2024/CAA_TWG_2024_BL/CAA_PPCC_2024/formated_ASVs_chl_CAA_PPCC_04242024.csv')
+ASV_table = read.csv('/Users/patrickwhite/Documents/GitHub/CAA_PPCC/formated_ASVs_chl_CAA_PPCC_04242024.csv')
 
 #read in taxonomic table
-phytoref_table = read.csv('/Users/patrickwhite/Documents/GitHub/CAA_TWG_2024/CAA_TWG_2024_BL/CAA_PPCC_2024/formated_phytoref_chl_CAA_PPCC_04242024.csv')
+phytoref_table = read.csv('/Users/patrickwhite/Documents/GitHub/CAA_PPCC/formated_phytoref_chl_CAA_PPCC_04242024.csv')
 
-meta_16s = read.csv('/Users/patrickwhite/Documents/GitHub/CAA_TWG_2024/CAA_TWG_2024_BL/CAA_PPCC_2024/devon_metadata_microbial_2021_5m_meaned_complete_06_05_2024.2.csv')
+meta_16s = read.csv('/Users/patrickwhite/Documents/GitHub/CAA_PPCC/devon_metadata_microbial_2021_5m_meaned_complete_06_05_2024.2.csv')
 
 meta_16s = format_sample_names(meta_16s)
 
@@ -738,7 +780,6 @@ dt = expand.grid(lon = c(-75, -95), lat = c(74, 85))
 map1 = basemap(data = dt, glaciers = T, bathymetry = T)  
 
 #save map
-file_extension = 'pdf'
 ggsave(paste0(PLOT_DIR,'map_fig_1_',CURRENT_DATE,'.',file_extension),map1, 
       device = file_extension, width = 6000, height = 4000, units = 'px')  
 ```
@@ -764,6 +805,10 @@ LAND_TYPE_NAMES = c('strongTWG' = 'Strong tidewater glacier influence', 'weakTWG
 tax_plot_df[tax_plot_df$Genus %in% c('Chaetocerotales','Chaetoceros','Micromonas','Thalassiosirales'),] %>% 
   group_by(Genus) %>% 
   dplyr::summarise(mean(percent))
+
+sum((tax_plot_df[tax_plot_df$Genus %in% c('Chaetocerotales','Chaetoceros','Micromonas','Thalassiosirales'),] %>% 
+  group_by(Genus) %>% 
+  dplyr::summarise(mean(percent)))$`mean(percent)`)
 
 #mean chaetoceros percent talbot
 tax_plot_df %>% filter(Glacier_Name == 'Talbot Inlet') %>% filter(Genus == 'Chaetoceros') %>% select(percent) %>% summary()
@@ -802,7 +847,7 @@ rel_abund_plot = ggplot(tax_plot_df, aes(x = (Sample_Name_Final), y = percent, f
 rel_abund_plot
 
 # @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
-# adding in Mixotrophy fig 
+# adding in flagellate fig 
 # @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
 
 # taxonomic groups and their mixotrophic status
@@ -810,62 +855,59 @@ likely_auto = c("Thalassiosirales", "Chaetoceros", "Other Diatoms", "Rhizosoleni
                  "Attheya", "Fragilariopsis", "Chaetocerotales", "Thalassiosira",
                  'Cylindrotheca','Coscinodiscophyceae','Rhizosolenia','Cymbellaceae','Cymatosiraceae')
 
-likely_mixo = c("Ochromonas", "Chrysochromulina","Pedinella","Pyramimonas",
-                 'Prymnesium','Teleaulax','Cymbomonas')
+likely_flag = c("Ochromonas", "Chrysochromulina","Pedinella","Pyramimonas",
+                 'Prymnesium','Teleaulax','Cymbomonas','Micromonas','Imantonia','Florenciella','Eutreptiella')
 
-maybe_mixo = c("Prymnesiales",'Geminigeraceae','Prymnesiophycidae','Imantonia','Florenciella','Micromonas')
 
-unknown = c('Eutreptiella','Ochrophyta','Unknown Eukaryota','Archaeplastida','<1%',"Phaeocystis")
+unknown = c("Prymnesiales",'Geminigeraceae','Prymnesiophycidae','Ochrophyta','Unknown Eukaryota','Archaeplastida','<1%',"Phaeocystis")
 
-#creating mixotrophic status variables based on above vectors
-tax_plot_df$mixtrophy_status = ifelse(tax_plot_df$Genus %in% likely_auto,'Autotroph',
-  ifelse(tax_plot_df$Genus %in% likely_mixo,'Mixotroph',
-    ifelse(tax_plot_df$Genus %in% maybe_mixo,'Potential mixotroph','Unknown')))
+#creating flagellate status variables based on above vectors
+tax_plot_df$flag_status = ifelse(tax_plot_df$Genus %in% likely_auto,'Diatoms',
+  ifelse(tax_plot_df$Genus %in% likely_flag,'Flagellates','Not assigned'))
 
 #group by mixotrophic status to recreate varplots groups for plotting
-tax_plot_df_mixo = tax_plot_df %>% ungroup() %>% 
-  group_by(SAMPLE_ID, mixtrophy_status) %>% 
+tax_plot_df_flag = tax_plot_df %>% ungroup() %>% 
+  group_by(SAMPLE_ID, flag_status) %>% 
   dplyr::summarise(percent = sum(percent))
 
 # ad back in sample ID and sample names to mixotrophic plot 
-tax_plot_df_mixo = inner_join(tax_plot_df_mixo, (tax_plot_df %>% select(site, SAMPLE_ID, Sample_Name_Final) %>% dplyr::distinct()), by = 'SAMPLE_ID')
+tax_plot_df_flag = inner_join(tax_plot_df_flag, (tax_plot_df %>% select(site, SAMPLE_ID, Sample_Name_Final) %>% dplyr::distinct()), by = 'SAMPLE_ID')
 
-#factor mixotrophy names for plotting
-tax_plot_df_mixo$mixtrophy_status = factor(tax_plot_df_mixo$mixtrophy_status, 
-                                           levels = c('Unknown','Autotroph','Potential mixotroph','Mixotroph'))
+#factor flagellate names for plotting
+tax_plot_df_flag$flag_status = factor(tax_plot_df_flag$flag_status, 
+                                           levels = c('Diatoms','Flagellates','Not assigned'))
 
-col_vec = c("grey", "lightsalmon", "lightskyblue1", "lightskyblue3")
+col_vec = c( "lightsalmon", "lightskyblue1", "grey")
 
 #get some gneeral information on prevalence of mixtoprhy across sites
-tax_plot_df_mixo$site
-tax_plot_df_mixo%>% filter(site == 'Weak tidewater glacier influence') %>% 
-  group_by(mixtrophy_status) %>% 
+tax_plot_df_flag%>% filter(site == 'Weak tidewater glacier influence') %>% 
+  group_by(flag_status) %>% 
   dplyr::summarise(mean(percent))
 
-unique(tax_plot_df_mixo$site)
-tax_plot_df_mixo %>% filter(site == 'No tidewater glacier') %>% 
-  group_by(mixtrophy_status) %>% 
+tax_plot_df_flag %>% filter(site == 'No tidewater glacier') %>% 
+  group_by(flag_status) %>% 
   dplyr::summarise(mean(percent))
 
-tax_plot_df_mixo %>% filter(site == 'Strong tidewater glacier influence') %>% 
-  group_by(mixtrophy_status) %>% 
+tax_plot_df_flag %>% filter(site == 'Strong tidewater glacier influence') %>% 
+  group_by(flag_status) %>% 
   dplyr::summarise(mean(percent))
 
-tax_plot_df_mixo %>% filter(site == 'Strong tidewater glacier influence') %>% 
+tax_plot_df_flag %>% filter(site == 'Strong tidewater glacier influence') %>% 
   filter(grepl('Sverdrup', Sample_Name_Final)) %>% 
-  group_by(mixtrophy_status) %>% 
+  group_by(flag_status) %>% 
   dplyr::summarise(mean(percent))
 
+tax_plot_df_flag %>% group_by(SAMPLE_ID) %>% dplyr::summarise(flag_perc = sum())
 
-tax_plot_df_mixo %>% filter(site %in% c('No tidewater glacier','Weak tidewater glacier influence')) %>% filter(mixtrophy_status %in% c('Mixotroph', 'Potential mixotroph')) %>% dplyr::summarise(sum_perc = sum(percent)) %>% ungroup() %>% dplyr::summarise(mean_perc = mean(sum_perc),med_perc = median(sum_perc))
+tax_plot_df_flag %>% filter(site %in% c('No tidewater glacier','Weak tidewater glacier influence')) %>% filter(flag_status %in% c('Flagellates')) %>% dplyr::summarise(sum_perc = sum(percent)) %>% ungroup() %>% dplyr::summarise(mean_perc = mean(sum_perc),med_perc = median(sum_perc))
 
-tax_plot_df_mixo %>% filter(grepl('Starnes2', Sample_Name_Final)) %>% filter(mixtrophy_status %in% c('Mixotroph', 'Potential mixotroph')) %>% dplyr::summarise(sum_perc = sum(percent)) %>% dplyr::summarise(mean_perc = mean(sum_perc),med_perc = median(sum_perc))
+tax_plot_df_flag %>% filter(grepl('Starnes2', Sample_Name_Final)) %>% filter(flag_status %in% c('Flagellates')) %>% dplyr::summarise(sum_perc = sum(percent)) %>% dplyr::summarise(mean_perc = mean(sum_perc),med_perc = median(sum_perc))
 
-tax_plot_df_mixo %>% filter(site %in% c('Strong tidewater glacier influence')) %>% filter(mixtrophy_status %in% c('Mixotroph', 'Potential mixotroph')) %>% dplyr::summarise(sum_perc = sum(percent)) %>% ungroup() %>% dplyr::summarise(mean_perc = mean(sum_perc),med_perc = median(sum_perc))
+tax_plot_df_flag %>% filter(site %in% c('Strong tidewater glacier influence')) %>% filter(flag_status %in% c('Flagellates')) %>% dplyr::summarise(sum_perc = sum(percent)) %>% ungroup() %>% dplyr::summarise(mean_perc = mean(sum_perc),med_perc = median(sum_perc))
 
-tax_plot_df_mixo %>% filter(site %in% c('Strong tidewater glacier influence')) %>% filter(mixtrophy_status %in% c('Mixotroph', 'Potential mixotroph')) %>% dplyr::summarise(sum_perc = sum(percent)) %>% ggplot(aes(x = sum_perc)) + geom_density()
+tax_plot_df_flag %>% filter(site %in% c('Strong tidewater glacier influence')) %>% filter(flag_status %in% c('Flagellates')) %>% dplyr::summarise(sum_perc = sum(percent)) %>% ggplot(aes(x = sum_perc)) + geom_density()
 
-mixotrophy_plot = ggplot(tax_plot_df_mixo, aes(x = (Sample_Name_Final), y = percent, fill = mixtrophy_status)) + # make plot
+flagellate_plot = ggplot(tax_plot_df_flag, aes(x = (Sample_Name_Final), y = percent, fill = flag_status)) + # make plot
   geom_bar(stat = 'identity',colour='black') + scale_fill_manual(values=c(col_vec)) +
   facet_grid(.~ site, drop = TRUE, scale = 'free', space = 'free_x')+
   #scale_y_discrete(expand=c(0,0))+
@@ -880,12 +922,12 @@ mixotrophy_plot = ggplot(tax_plot_df_mixo, aes(x = (Sample_Name_Final), y = perc
         legend.title=element_text(size=14), 
         legend.key.size=unit(1.2, "lines")) + 
   theme(axis.text.x = element_blank(), legend.position = 'none',panel.border = element_rect(color = "black", size = 3, fill = NA))
-mixotrophy_plot
+flagellate_plot
 
 
-mixotrophy_plot = mixotrophy_plot + theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 10))
+flagellate_plot = flagellate_plot + theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 10))
 
-gridder = cowplot::plot_grid(rel_abund_plot,mixotrophy_plot, nrow = 2, rel_heights = c(1, .5))
+gridder = cowplot::plot_grid(rel_abund_plot,flagellate_plot, nrow = 2, rel_heights = c(1, .5))
 
 # @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
 # adding in Chaetoceros fig 
@@ -928,7 +970,7 @@ chea_supp = ggplot(tax_plot_df_chae_only, aes(x = (Sample_Name_Final), y = perce
         axis.text.y = element_text(size = 15),panel.border = element_rect(color = "black", fill = NA, size = 4), panel.background = element_rect(fill = 'white'), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), strip.background =element_rect(fill='white'), strip.text = element_text(size = 15, vjust = 0),legend.text=element_text(size=13),legend.title=element_blank())
 chea_supp
 
-file_extension = 'png'
+file_extension = 'pdf'
 ggsave(paste0(PLOT_DIR,'chaetoceros_supp_',CURRENT_DATE,'.',file_extension),chea_supp, 
        device = file_extension, width = 6000, height = 4000, units = 'px')  
 
@@ -945,7 +987,7 @@ chae_main_plot = ggplot(tax_plot_df_chae_only, aes(x = (Sample_Name_Final), y = 
         panel.grid.major = element_blank(), panel.grid.minor = element_blank())
 chae_main_plot
 
-gridder = cowplot::plot_grid(rel_abund_plot,chae_main_plot,mixotrophy_plot, nrow = 3, rel_heights = c(1,.15,.5))
+gridder = cowplot::plot_grid(rel_abund_plot,chae_main_plot,flagellate_plot, nrow = 3, rel_heights = c(1,.15,.5))
 gridder
 
 file_extension = 'pdf'
@@ -963,7 +1005,7 @@ unique(tax_plot_df_spec$`sum(percent)`)
 
 tax_plot_df_spec = format_sample_names(tax_plot_df_spec)
 
-specs_colours = c('lightsalmon2', 'lightgoldenrod3', 'lightcyan3', 'darkgreen', 'palevioletred4', 'green', 'lightskyblue4', 'darkslateblue', 'deeppink', 'navy', 'seashell3', 'tomato2', 'olivedrab2', 'magenta3', 'dodgerblue4', 'orange1', 'hotpink4', 'peachpuff1', 'dodgerblue2', 'darkred', 'red', 'mediumspringgreen', 'yellow4', 'lemonchiffon4', 'ivory2', 'salmon2', 'lightgoldenrod2', 'yellow', 'darkseagreen2', 'azure', 'purple1', 'honeydew4', 'black', 'skyblue1', 'darkturquoise', 'orangered', 'bisque4', 'thistle1')
+specs_colours = c('lightsalmon2', 'lightgoldenrod3', 'lightcyan3', 'darkgreen', 'palevioletred4', 'green', 'lightskyblue4', 'darkslateblue', 'deeppink', 'navy', 'seashell3', 'tomato2', 'olivedrab2', 'magenta3', 'dodgerblue4', 'orange1', 'hotpink4', 'peachpuff1', 'red', 'darkred', 'dodgerblue2', 'mediumspringgreen', 'yellow4', 'lemonchiffon4', 'ivory2', 'salmon2', 'lightgoldenrod2', 'yellow', 'darkseagreen2', 'azure', 'purple1', 'honeydew4', 'black', 'skyblue1', 'darkturquoise', 'orangered', 'bisque4', 'thistle1')
 
 tax_plot_df_spec$site = factor((LAND_TYPE_NAMES[tax_plot_df_spec$landtype]), levels = c( 'No tidewater glacier', 'Weak tidewater glacier influence','Strong tidewater glacier influence'))
 
@@ -978,6 +1020,7 @@ species_supp = ggplot(tax_plot_df_spec, aes(x = (Sample_Name_Final), y = `sum(pe
         axis.text.y = element_text(size = 15),panel.border = element_rect(color = "black", fill = NA, size = 4), panel.background = element_rect(fill = 'white'), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), strip.background =element_rect(fill='white'), strip.text = element_text(size = 15, vjust = 0),legend.text=element_text(size=10),legend.title=element_blank()) 
 species_supp
 
+file_extension = 'pdf'
 ggsave(paste0(PLOT_DIR,'supp_species_',CURRENT_DATE,'.',file_extension),species_supp, 
        device = file_extension, width = 6000, height = 4000, units = 'px')  
 ```
@@ -1024,6 +1067,7 @@ names(bray_asv)
 landtype_df = left_join(base::data.frame(SAMPLE_ID = names(bray_asv)), 
           meta_16s %>% select(landtype, SAMPLE_ID))
 
+#perform ansim statistics
 anosim(bray_asv, grouping = landtype_df$landtype)
 ```
 
@@ -1049,15 +1093,17 @@ file_extension = 'pdf'
 ggsave(paste0(PLOT_DIR,'',CURRENT_DATE,'no_elipses_presensation.',file_extension),p1, 
        device = file_extension, width = 3600, height = 3600, units = 'px')  
 
+
+
 ```
 
 ##Main and supp Rubisco plot
 ```{r Rubisco plot: Figure 5}
 #read in CTD chlorophyll a tracer data
-chla_tracers = read.csv('/Users/patrickwhite/Documents/GitHub/CAA_TWG_2024/CAA_TWG_2024_BL/CAA_PPCC_2024/chla_tracer_data_rubisco_CAA_PPCC.csv')
+chla_tracers = read.csv('/Users/patrickwhite/Documents/GitHub/CAA_PPCC/chla_tracer_data_rubisco_CAA_PPCC.csv')
 
 #read in rubisco and assocaited metadata
-Rubisco_data = read.csv('/Users/patrickwhite/Documents/GitHub/CAA_TWG_2024/CAA_TWG_2024_BL/CAA_PPCC_2024/Rubisco_data_meta_CAA_PPCC_06052024.csv')
+Rubisco_data = read.csv('/Users/patrickwhite/Documents/GitHub/CAA_PPCC/Rubisco_data_meta_CAA_PPCC_06052024.csv')
 
 #check basic statistics for pmol of diatom Rubisco
 Rubisco_data %>% filter(grepl('FL',Modified.Sequence)) %>% select(pmol.L) %>% summary()
@@ -1083,14 +1129,13 @@ Rubisco_data$carb_fix = (Rubisco_data$pmol.L*1000)*(10^-15)*0.4*12.011*1000*8640
 panel2 = plot_panel_2_Rubisco_2(Rubisco_data, chla_tracers)
 panel2
 
-
 #combine panles into one large plot with scaled sizes
 full_Rubisco_plot = plot_grid(panel1, panel2, nrow = 2, ncol = 1, rel_heights = c(.9, 1))
 
 #saving plot as pdf to be manipulated in Inkscape 
 file_extension = 'pdf'
 ggsave(paste0(PLOT_DIR,'Rubisco_fig_all_nuts_',CURRENT_DATE,'.',file_extension),full_Rubisco_plot, 
-       device = file_extension, width = 4000, height = 4000, units = 'px')  
+       device = file_extension, width = 4000, height = 3000, units = 'px')  
 
 #creating dataframe for the supplemental rubisco plot.
 Rubisco_data2 = Rubisco_data %>% filter(grepl('SV',Sample.name)) %>% 
@@ -1108,6 +1153,56 @@ Rubisco_data2 = Rubisco_data %>% filter(grepl('SV',Sample.name)) %>%
   left_join(., 
             Rubisco_data %>% select(Sample.name, Fe56.MR.,Cd111.LR., Mn55.MR., SiO4, PO4,NO3, Glacier_Name) %>% 
               distinct())
+
+Rubisco_data3 = left_join(Rubisco_data2, (meta_16s %>% select(SAMPLE_ID, Salinity, Temperature, Turbidity)), by = c('Sample.name' = 'SAMPLE_ID'))
+
+ggplot(Rubisco_data3, aes( x = Temperature, mean_pmol_conc)) + geom_point()
+Rubisco_data3$Temperature 
+Rubisco_data3$NO3
+
+s1 = ggplot(Rubisco_data3 ,aes( y = mean_pmol_conc, x = as.numeric(Salinity)))+
+  geom_smooth(method='lm', level = 0, color = 'black', linetype = 'dashed') +
+  geom_point(aes(fill = Glacier_Name), size = 12,shape = 21, color = 'black') +
+  scale_fill_manual(values = GLACIATION_COLORS)+
+  theme_bw() + xlab('Sal')+
+  ylab('Sum of all diatom specific Rubisco peptides (pM)') + 
+  my_text_theme(axis_and_tick_size = 20) + 
+  theme(legend.position = 'none')
+s1
+
+# sal l - p = 0.028 r = 0.68
+res <- cor.test(Rubisco_data3$mean_pmol_conc, Rubisco_data3$Salinity, 
+                method = "pearson")
+res
+
+s1 = ggplot(Rubisco_data3 ,aes( y = mean_pmol_conc, x = as.numeric(Turbidity)))+
+  geom_smooth(method='lm', level = 0, color = 'black', linetype = 'dashed') +
+  geom_point(aes(fill = Glacier_Name), size = 12,shape = 21, color = 'black') +
+  scale_fill_manual(values = GLACIATION_COLORS)+
+  theme_bw() + xlab('Turb')+
+  ylab('Sum of all diatom specific Rubisco peptides (pM)') + 
+  my_text_theme(axis_and_tick_size = 20) + 
+  theme(legend.position = 'none')
+s1
+# temp l - p = 0.025 r = -0.39
+res <- cor.test(Rubisco_data3$mean_pmol_conc, Rubisco_data3$Temperature, 
+                method = "pearson")
+res
+
+
+s1 = ggplot(Rubisco_data3 ,aes( y = mean_pmol_conc, x = as.numeric(Temperature)))+
+  geom_smooth(method='lm', level = 0, color = 'black', linetype = 'dashed') +
+  geom_point(aes(fill = Glacier_Name), size = 12,shape = 21, color = 'black') +
+  scale_fill_manual(values = GLACIATION_COLORS)+
+  theme_bw() + xlab('Temperature')+
+  ylab('Sum of all diatom specific Rubisco peptides (pM)') + 
+  my_text_theme(axis_and_tick_size = 20) + 
+  theme(legend.position = 'none')
+s1
+# turb l - p = 0.73 r = 0.12
+res <- cor.test(Rubisco_data3$mean_pmol_conc, Rubisco_data3$Turbidity, 
+                method = "pearson")
+res
 
 # plotting nutrients and diatom relationships and calculating pearson correlations
 s1 = ggplot(Rubisco_data2 ,aes( y = mean_pmol_conc, x = as.numeric(NO3)))+
@@ -1266,15 +1361,15 @@ ggsave(paste0(PLOT_DIR,'Rubisco_diam_correlation_nuts_tms_',CURRENT_DATE,'.',fil
 
 ```
 
-## Supp boxplot
+## boxplots
 ```{r}
 
 # Define the variables to be used for analysis
-vars_all = c('SAMPLE_ID','landtype','Temperature', 'Salinity','Turbidity', 'Chlorophyl a','N2', 'Dissolved O2','SiO4','PO4','NO3','NH3')
+vars_all = c('SAMPLE_ID','landtype','Temperature', 'Salinity','Turbidity', 'Chlorophyl a','N2', 'SiO4','PO4','NO3','NH3')
 
 # Select relevant columns from meta_16s then pivot the data from wide to long format
 long = meta_16s %>%
-  select(vars_all, Glacier_Name) %>%
+  select(all_of(vars_all), Glacier_Name, SURF_SCM) %>%
   select(-SAMPLE_ID) %>%
   pivot_longer(cols = Temperature:NH3) 
 
@@ -1292,34 +1387,69 @@ mean(sv_meta$SiO4, na.rm = T) / mean(sv_meta$PO4, na.rm = T)
 long$Glacier_Name = factor(long$Glacier_Name, levels = names(GLACIATION_COLORS))
 
 # Rename variables for better readability
-name_change = c('Dissolved O2' = 'Dissolved oxygen',
-  'NO3' = 'Nitrate',
-  'SiO4' = 'Silicate',
-  'NH3' ='Ammonia',
-  'PO4' = 'Phosphate',
-  'Salinity' = 'Salinity',
-  'Turbidity' = 'Turbidity',
-  'Temperature' = 'Temperature',
-  'Chlorophyl a' = 'Chlorophyll a',
+name_change = c(
+  'NO3' = 'Nitrate (µM)',
+  'SiO4' = 'Silicate (µM)',
+  'NH3' ='Ammonia (µM)',
+  'PO4' = 'Phosphate (µM)',
+  'Salinity' = 'Salinity (PSU)',
+  'Turbidity' = 'Turbidity (NTU)',
+  'Temperature' = 'Temperature (°C)',
+  'Chlorophyl a' = 'Chlorophyll a (RFU)',
   'N2' = 'N2')
 long$name = unname(name_change[long$name])
 
 # Convert 'name' to a factor with predefined levels
-long$name = factor(long$name, levels = c('Temperature', 'Salinity','Turbidity', 'N2', 'Dissolved oxygen','Chlorophyll a','Silicate','Phosphate','Nitrate','Ammonia'))
+long$name = factor(long$name, levels = c('Temperature (°C)', 'Salinity (PSU)','Turbidity (NTU)', 'N2','Chlorophyll a (RFU)','Silicate (µM)','Phosphate (µM)','Nitrate (µM)','Ammonia (µM)'))
+
+# separate out sites that have more than 4 points to make box plots
+long_enough_points = long %>% filter(!Glacier_Name %in% c('Grise Fiord', 'Harbour', 'Starnes.1','Starnes.2'))
+
+unique(long_meaned$name)
+long_meaned = long %>% 
+  #filter(landtype == 'strongTWG' | landtype == 'weakTWG') %>% 
+  group_by(name,landtype) %>% 
+  dplyr::summarise(mean_val = mean(value, na.rm = T),
+                   sd_val = sd(value, na.rm = T),
+                   name = first(name)) %>% 
+  mutate(mean_val = if_else(landtype == 'land', NA, mean_val)) %>% 
+  mutate(sd_val = if_else(landtype == 'land', NA, sd_val)) %>%
+  mutate(Glacier_Name = if_else(landtype == 'weakTWG', 'Starnes.2', landtype)) %>%
+  mutate(Glacier_Name = if_else(landtype == 'strongTWG', 'Sydkap',Glacier_Name)) %>% 
+  filter(landtype != 'land') %>% 
+  mutate(sd_val = if_else(name == 'Salinity (PSU)'|
+                            name == 'N2'|
+                            name == 'Silicate (µM)'|
+                            name == 'Nitrate (µM)'|
+                            name == 'Turbidity (NTU)'|
+                          name == 'Phosphate (µM)',NA, sd_val)) %>% 
+mutate(mean_val = if_else(name == 'Salinity (PSU)'|
+                            name == 'N2'|
+                            name == 'Turbidity (NTU)'|
+                            name == 'Silicate (µM)'|
+                            name == 'Nitrate (µM)'|
+                          name == 'Phosphate (µM)',NA, mean_val)) %>% 
+            filter(name == 'Temperature (°C)'|
+                            name == 'Chlorophyll a (RFU)'|
+                            name == 'Ammonia (µM)') %>% 
+  mutate(landtype = factor(landtype, levels = c('weakTWG','strongTWG')))
 
 # Create a boxplot using ggplot
-bp = ggplot(long, aes(y = value, x = Glacier_Name, fill = Glacier_Name)) +
-  geom_boxplot() +
-  facet_wrap(~name, scales = 'free_y', ncol = 3) +
-  geom_point(shape = 21, fill = 'black', color = 'white') +
+bp = ggplot() +
+  geom_point(data = long, aes(y = value, x = Glacier_Name, fill = Glacier_Name, shape = SURF_SCM), color = 'black', size = 3,alpha = .5) +
+  geom_boxplot(data = long_enough_points, aes(y = value, x = Glacier_Name, fill = Glacier_Name), color = 'black') +
+  geom_point(data = long, aes(y = value, x = Glacier_Name, fill = Glacier_Name, shape = SURF_SCM) , size = 3,alpha = .5) +
+  scale_shape_manual(values=c(21,23)) +
+  facet_wrap(~name, scales = 'free_y', ncol = 3, strip.position = "left") +
   ylab('') +
   xlab('') +
   scale_fill_manual(values = GLACIATION_COLORS) +
+  scale_color_manual(values = POINT_COLORS) +
   theme(
     plot.margin = unit(c(.22,.22,.22,0.2,.22), "cm"),
     legend.position = 'none',
     axis.text = element_text(color = 'black', size = 1),
-    axis.text.x = element_text(angle = 90, hjust = 0.95, vjust = 0.2, size = 10),
+    axis.text.x = element_blank(),
     axis.text.y = element_text(size = 15),
     panel.border = element_rect(color = "black", fill = NA, size = 4),
     panel.background = element_rect(fill = 'white'),
@@ -1328,12 +1458,190 @@ bp = ggplot(long, aes(y = value, x = Glacier_Name, fill = Glacier_Name)) +
     strip.background = element_rect(fill = 'white'),
     strip.text = element_text(size = 15, vjust = 0),
     legend.text = element_text(size = 13),
+    strip.placement = "outside",
     legend.title = element_blank()
   )
 bp
 
+long_meaned2 = long %>% filter(name == 'Temperature (°C)'|
+                            name == 'Chlorophyll a (RFU)'|
+                            name == 'Ammonia (µM)') %>% 
+  filter(landtype != 'land') %>% 
+  mutate(landtype = factor(landtype, levels = c('weakTWG','strongTWG')))
+
+# Define the comparisons you want to highlight
+comparisons <- list(c("weakTWG", "strongTWG"))  # Only one comparison here
+
+# Create the plot
+bp2 <- ggplot() +
+  geom_boxplot(data = long_meaned2, aes(y = value, x = landtype, fill = landtype), color = 'black') +
+  geom_point(data = long_meaned2, aes(y = value, x = landtype, fill = landtype), color = 'black') +
+  facet_wrap(~name, scales = 'free_y', ncol = 3, strip.position = "left") +
+  ylab('') + 
+  xlab('') + 
+  scale_fill_manual(values = GLACIATION_COLORS) + 
+  scale_color_manual(values = POINT_COLORS) + 
+  scale_shape_manual(values=c(21,23)) + 
+  theme(
+    plot.margin = unit(c(.22, .22, .22, 1.3, .22), "cm"),
+    legend.position = 'none',
+    axis.text = element_text(color = 'black', size = 1),
+    axis.text.x = element_blank(),
+    axis.text.y = element_text(size = 15),
+    panel.border = element_rect(color = "black", fill = NA, size = 4),
+    panel.background = element_rect(fill = 'white'),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    strip.background = element_rect(fill = 'white'),
+    strip.text = element_text(size = 13, vjust = 0),
+    legend.text = element_text(size = 13),
+    strip.placement = "outside",
+    legend.title = element_blank()
+  ) +
+  ggsignif::geom_signif(data = long_meaned2, aes(y = value, x = landtype, fill = landtype),
+    comparisons = list(c("weakTWG", "strongTWG")), 
+              test = 'wilcox.test',
+    map_signif_level =  c("***"=0.001, "**"=0.01, "*"=0.05))+
+  scale_y_continuous(expand = expansion(mult = c(0.2, 0.2)))
+
+
+bp2
+
+bp_grridd = cowplot::plot_grid(bp,bp2, nrow = 2, rel_heights = c(1,0.2))
+bp_grridd
+
 # Save the boxplot as a PNG file
-file_extension = 'png'
-ggsave(paste0(PLOT_DIR,'box_plot_chem_phys_Supp_',CURRENT_DATE,file_extension), bp, 
+file_extension = 'pdf'
+ggsave(paste0(PLOT_DIR,'box_plot_chem_phys_Supp_',CURRENT_DATE,'.',file_extension), bp_grridd, 
        device = file_extension, width = 3600, height = 3600, units = 'px')  
+
+## test sig dif between groups 
+#Mann-Whitney U Test
+
+meta_16s_sTWG = meta_16s %>% filter(site == 'Strong tidewater glacier influence')
+meta_16s_wTWG = meta_16s %>% filter(site == 'Weak tidewater glacier influence') 
+meta_16s_wsTWG = meta_16s %>% filter(site == 'Weak tidewater glacier influence'|site == 'Strong tidewater glacier influence')%>% 
+  mutate(site = factor(site, levels = c('Strong tidewater glacier influence', 'Weak tidewater glacier influence')))
+
+# Perform the Mann-Whitney U test
+test_result <- ?wilcox.test(meta_16s_sTWG$Salinity, meta_16s_wTWG$Salinity, alternative = 'two.sided')
+# p-value = 0.4365
+ggplot(meta_16s_wsTWG, aes(x = Salinity, y = site)) + geom_boxplot()
+
+test_result <- wilcox.test(meta_16s_sTWG$Temperature, meta_16s_wTWG$Temperature, alternative = 'two.sided')
+# p-value = 1.614e-06
+test_result <- wilcox.test(meta_16s_sTWG$Temperature, meta_16s_wTWG$Temperature, alternative = 'less')
+# p-value = 8.072e-07
+ggplot(meta_16s_wsTWG, aes(x = Temperature, y = site)) + geom_boxplot()
+
+test_result <- wilcox.test(meta_16s_sTWG$`Chlorophyl a`, meta_16s_wTWG$`Chlorophyl a`, alternative = 'two.sided')
+# p-value = 0.0001975
+test_result <- wilcox.test(meta_16s_sTWG$`Chlorophyl a`, meta_16s_wTWG$`Chlorophyl a`, alternative = 'greater')
+# p-value = 9.874e-05
+ggplot(meta_16s_wsTWG, aes(x = `Chlorophyl a`, y = site)) + geom_boxplot()
+
+test_result <- wilcox.test(meta_16s_sTWG$N2, meta_16s_wTWG$N2, alternative = 'two.sided')
+# p-value = 0.3587
+ggplot(meta_16s_wsTWG, aes(x = N2, y = site)) + geom_boxplot()
+
+test_result <- wilcox.test(meta_16s_sTWG$Turbidity, meta_16s_wTWG$Turbidity, alternative = 'two.sided')
+# p-value = 0.06188
+ggplot(meta_16s_wsTWG, aes(x = Turbidity, y = site)) + geom_boxplot()
+
+test_result <- wilcox.test(meta_16s_sTWG$NO3, meta_16s_wTWG$NO3, alternative = 'two.sided')
+# p-value = 0.08763
+test_result <- wilcox.test(meta_16s_sTWG$NO3, meta_16s_wTWG$NO3, alternative = 'greater')
+ggplot(meta_16s_wsTWG, aes(x = NO3, y = site)) + geom_boxplot()
+
+test_result <- wilcox.test(meta_16s_sTWG$NH3, meta_16s_wTWG$NH3, alternative = 'two.sided')
+# p-value = 0.001747
+ggplot(meta_16s_wsTWG, aes(x = NH3, y = site)) + geom_boxplot()
+
+test_result <- wilcox.test(meta_16s_sTWG$SiO4, meta_16s_wTWG$SiO4, alternative = 'two.sided')
+# p-value = 0.5323
+ggplot(meta_16s_wsTWG, aes(x = SiO4, y = site)) + geom_boxplot()
+
+test_result <- wilcox.test(meta_16s_sTWG$PO4, meta_16s_wTWG$PO4, alternative = 'two.sided', na.rm =T)
+# p-value = 0.44
+ggplot(meta_16s_wsTWG, aes(x = PO4, y = site)) + geom_boxplot()
+
 ```
+
+## dbRDA
+```{r}
+
+### ordistep dbrda ############
+
+
+#transpose ASV table, see transpose_func in functions file for documentation
+asvs_table = transpose_func(ASV_table)
+
+#filter the metadata and transpose
+tmeta = meta_16s %>% filter(SAMPLE_ID %in% rownames(asvs_table))  %>% 
+  select(SAMPLE_ID,Temperature,Salinity,Turbidity,`Chlorophyl a`,`Dissolved O2`,N2,SiO4,PO4,NO2,NO3,NH3)  %>% na.omit()
+
+asvs_table = asvs_table[rownames(asvs_table) %in% tmeta$SAMPLE_ID,]
+
+#hellinger transform data
+helASV = decostand(asvs_table, 'hellinger')
+
+#calcualte distance matrix
+tbc = vegdist(helASV, 'bray')
+
+#dbRDA plot bc
+tmeta[,2:length(tmeta)] = scale(tmeta[,2:length(tmeta)], center = T)
+helASV %<>% as.data.frame()
+helASV$SAMPLE_ID = rownames(helASV)
+tmeta = left_join(helASV, tmeta, by = 'SAMPLE_ID') %>%
+  select(SAMPLE_ID,Temperature,Salinity,Turbidity,SiO4,PO4,NO3,NH3)
+
+#perform bidirectional dbRDA
+bcdbRDA = ordistep(capscale(tbc ~ Temperature+Salinity+Turbidity+PO4+NO3+NH3+SiO4, tmeta, direction = 'both', pstep = 1000, R2scop = T))
+
+#adjusted r2
+RsquareAdj(bcdbRDA)
+
+#check for co-linearity
+vif.cca(bcdbRDA)
+
+#pull out points from dbRDA object for plotting
+bcdbRDA$CCA$biplot
+bcdbRDA$CCA$biplot[,c(1,2)] # this seems to be vectors
+plot(bcdbRDA$CCA$wa[,1],bcdbRDA$CCA$wa[,2]) # this seems to be pouts 
+summary(bcdbRDA)
+points = bcdbRDA$CCA$wa[,c(1,2)]
+vectors = bcdbRDA$CCA$biplot[,c(1,2)]
+
+vectors = as.data.frame(vectors)
+vectors$names = rownames(vectors)
+points = as.data.frame(points)
+points$SAMPLE_ID = rownames(points)
+points = left_join(points, meta_16s[,c('SAMPLE_ID','Glacier_Name','SURF_SCM')], by = 'SAMPLE_ID')
+summary(bcdbRDA)
+
+# plot dbrda
+rdap = ggplot(points) + geom_point(mapping = aes(x = CAP1, y = CAP2, fill = Glacier_Name, shape = SURF_SCM),size=15, alpha = .8) +
+  scale_fill_manual(values = GLACIATION_COLORS) +
+  scale_shape_manual(values=c(21, 23)) + 
+  guides(fill=guide_legend(override.aes=list(shape=21))) + 
+  coord_fixed()  + 
+  geom_segment(data = vectors,
+               aes(x = 0, xend = CAP1/3, y = 0, yend = CAP2/3), # dividing by X adjust length of vecotrs
+               arrow = arrow(length = unit(0.25, 'cm')), colour = 'grey4') +
+  geom_text(data = vectors, aes(x = CAP1/3, y = CAP2/3, label = names),# dividing by X adjust vecotr labels
+            size = 10)+
+  xlab('RDA1 21.21%')+
+  xlim(-.35,.35)+
+  ylim(-.35,.35)+
+  ylab('RDA2 6.086%')+
+  theme_bw() + theme(panel.grid.major = element_blank(),
+                     panel.grid.minor = element_blank(),
+                     legend.position = 'none',axis.title.x = element_text(size = 15),axis.title.y = element_text(size = 15), 
+                     axis.text.x = element_text(size = 13),axis.text.y = element_text(size = 13)) + my_text_theme()
+
+rdap
+
+ggsave(paste0(PLOT_DIR,'dbrda_',CURRENT_DATE,'.',file_extension),rdap, device = 'pdf', width = 12, height = 12, limitsize = F)  
+
+```
+
